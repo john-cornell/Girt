@@ -8,7 +8,7 @@
         xmlns:models="clr-namespace:Girt.Models"
         mc:Ignorable="d"
         Title="{Binding WindowTitle}"
-        Icon="pack://application:,,,/Assets/app_icon.png"
+        Icon="pack://application:,,,/Assets/app_icon.ico"
         Height="850" Width="1350"
         MinHeight="600" MinWidth="950"
         Background="{DynamicResource WindowBackgroundBrush}"

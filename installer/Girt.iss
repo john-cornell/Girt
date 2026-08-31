@@ -21,6 +21,7 @@ OutputBaseFilename=GirtSetup
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\src\Girt\Assets\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=lowest
 MinVersion=10.0
