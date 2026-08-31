@@ -1,0 +1,38 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Backgrounds -->
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#0D1117" />
+    <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#161B22" />
+    <SolidColorBrush x:Key="CardBackgroundBrush" Color="#21262D" />
+    <SolidColorBrush x:Key="HeaderBackgroundBrush" Color="#161B22" />
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#0D1117" />
+    <SolidColorBrush x:Key="HoverBackgroundBrush" Color="#30363D" />
+    <SolidColorBrush x:Key="SelectedBackgroundBrush" Color="#1F6FEB" Opacity="0.25" />
+    <SolidColorBrush x:Key="ActiveItemHighlightBrush" Color="#388BFD" Opacity="0.15" />
+
+    <!-- Foregrounds / Texts -->
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F0F6FC" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#8B949E" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#6E7681" />
+    <SolidColorBrush x:Key="TextAccentBrush" Color="#58A6FF" />
+
+    <!-- Borders -->
+    <SolidColorBrush x:Key="BorderBrush" Color="#30363D" />
+    <SolidColorBrush x:Key="BorderSubtleBrush" Color="#21262D" />
+    <SolidColorBrush x:Key="BorderAccentBrush" Color="#58A6FF" />
+
+    <!-- Brand / Accents -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#238636" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#2EA043" />
+    <SolidColorBrush x:Key="PrimaryActionBrush" Color="#1F6FEB" />
+    <SolidColorBrush x:Key="PrimaryActionHoverBrush" Color="#388BFD" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#DA3633" />
+
+    <!-- Diff Colors -->
+    <SolidColorBrush x:Key="DiffAddedBgBrush" Color="#238636" Opacity="0.2" />
+    <SolidColorBrush x:Key="DiffAddedTextBrush" Color="#3FB950" />
+    <SolidColorBrush x:Key="DiffDeletedBgBrush" Color="#DA3633" Opacity="0.2" />
+    <SolidColorBrush x:Key="DiffDeletedTextBrush" Color="#F85149" />
+    <SolidColorBrush x:Key="DiffHeaderBgBrush" Color="#388BFD" Opacity="0.15" />
+    <SolidColorBrush x:Key="DiffHeaderTextBrush" Color="#79C0FF" />
+</ResourceDictionary>

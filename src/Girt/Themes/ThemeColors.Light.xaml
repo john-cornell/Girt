@@ -1,0 +1,38 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Backgrounds -->
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#F6F8FA" />
+    <SolidColorBrush x:Key="CardBackgroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="HeaderBackgroundBrush" Color="#F6F8FA" />
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="HoverBackgroundBrush" Color="#EAEEF2" />
+    <SolidColorBrush x:Key="SelectedBackgroundBrush" Color="#DDF4FF" />
+    <SolidColorBrush x:Key="ActiveItemHighlightBrush" Color="#E8F4FF" />
+
+    <!-- Foregrounds / Texts -->
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#1F2328" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#656D76" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#8C959F" />
+    <SolidColorBrush x:Key="TextAccentBrush" Color="#0969DA" />
+
+    <!-- Borders -->
+    <SolidColorBrush x:Key="BorderBrush" Color="#D0D7DE" />
+    <SolidColorBrush x:Key="BorderSubtleBrush" Color="#EAEAEA" />
+    <SolidColorBrush x:Key="BorderAccentBrush" Color="#0969DA" />
+
+    <!-- Brand / Accents -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#1F883D" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#1A7F37" />
+    <SolidColorBrush x:Key="PrimaryActionBrush" Color="#0969DA" />
+    <SolidColorBrush x:Key="PrimaryActionHoverBrush" Color="#218BFF" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#CF222E" />
+
+    <!-- Diff Colors -->
+    <SolidColorBrush x:Key="DiffAddedBgBrush" Color="#E6FFEC" />
+    <SolidColorBrush x:Key="DiffAddedTextBrush" Color="#1A7F37" />
+    <SolidColorBrush x:Key="DiffDeletedBgBrush" Color="#FFEBE9" />
+    <SolidColorBrush x:Key="DiffDeletedTextBrush" Color="#CF222E" />
+    <SolidColorBrush x:Key="DiffHeaderBgBrush" Color="#DDF4FF" />
+    <SolidColorBrush x:Key="DiffHeaderTextBrush" Color="#0969DA" />
+</ResourceDictionary>

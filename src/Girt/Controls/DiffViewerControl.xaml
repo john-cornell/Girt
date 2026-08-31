@@ -1,0 +1,75 @@
+<UserControl x:Class="Girt.Controls.DiffViewerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:converters="clr-namespace:Girt.Converters"
+             xmlns:models="clr-namespace:Girt.Models"
+             mc:Ignorable="d" 
+             d:DesignHeight="300" d:DesignWidth="600">
+    <UserControl.Resources>
+        <converters:DiffTypeToBackgroundConverter x:Key="DiffBgConverter" />
+        <converters:DiffTypeToForegroundConverter x:Key="DiffFgConverter" />
+        <converters:NullToVisibilityConverter x:Key="NullToVisConverter" />
+    </UserControl.Resources>
+
+    <Grid Background="{DynamicResource CardBackgroundBrush}">
+        <!-- Empty state when no diff is selected -->
+        <TextBlock Text="Select a file to view changes"
+                   Foreground="{DynamicResource TextMutedBrush}"
+                   FontSize="13"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Visibility="{Binding DiffLines.Count, Converter={StaticResource NullToVisConverter}, ConverterParameter=Empty}" />
+
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding DiffLines}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type models:DiffLine}">
+                        <Border Background="{Binding Type, Converter={StaticResource DiffBgConverter}}"
+                                Padding="4,1"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="40" />
+                                    <ColumnDefinition Width="40" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Old Line Number -->
+                                <TextBlock Grid.Column="0"
+                                           Text="{Binding OldLineNumber}"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontFamily="Consolas, Cascadia Code, monospace"
+                                           FontSize="12"
+                                           TextAlignment="Right"
+                                           Margin="0,0,8,0" />
+
+                                <!-- New Line Number -->
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding NewLineNumber}"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontFamily="Consolas, Cascadia Code, monospace"
+                                           FontSize="12"
+                                           TextAlignment="Right"
+                                           Margin="0,0,12,0" />
+
+                                <!-- Line Content -->
+                                <TextBlock Grid.Column="2"
+                                           Text="{Binding Text}"
+                                           Foreground="{Binding Type, Converter={StaticResource DiffFgConverter}}"
+                                           FontFamily="Consolas, Cascadia Code, monospace"
+                                           FontSize="12" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

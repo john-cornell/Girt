@@ -1,0 +1,18 @@
+## .NET Core / C#
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+.vs/
+.idea/
+.vscode/
+
+## Test Results
+TestResults/
+[Tt]est[Rr]esult*
+*.trx
+
+## Code Index
+.codeidx/
