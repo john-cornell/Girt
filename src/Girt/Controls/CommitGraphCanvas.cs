@@ -57,14 +57,15 @@ namespace Girt.Controls
             var laneWidth = LaneWidth;
             var rowHeight = RowHeight;
             var halfHeight = rowHeight / 2.0;
+            var isDimmed = commit.IsDimmed;
 
             // 1. Draw connections
             if (commit.Connections != null)
             {
                 foreach (var conn in commit.Connections)
                 {
-                    var brush = GetBrush(conn.Color);
-                    var pen = new Pen(brush, 2.0);
+                    var brush = GetBrush(conn.Color, isDimmed);
+                    var pen = new Pen(brush, isDimmed ? 1.5 : 2.0);
                     pen.Freeze();
 
                     var fromX = conn.FromLane * laneWidth + laneWidth / 2.0;
@@ -105,29 +106,40 @@ namespace Girt.Controls
             }
 
             // 2. Draw incoming connection from top (if this commit connects with earlier child commit)
-            // If it's on a lane, draw vertical line from top (0) to center (halfHeight)
             var nodeX = commit.LaneIndex * laneWidth + laneWidth / 2.0;
-            var nodeBrush = GetBrush(commit.LaneColor);
-            var nodePen = new Pen(nodeBrush, 2.0);
+            var nodeBrush = GetBrush(commit.LaneColor, isDimmed);
+            var nodePen = new Pen(nodeBrush, isDimmed ? 1.5 : 2.0);
             nodePen.Freeze();
 
-            // Line coming in from top to node center (unless it's the root/new branch tip with no incoming)
+            // Line coming in from top to node center
             dc.DrawLine(nodePen, new Point(nodeX, 0), new Point(nodeX, halfHeight));
 
             // 3. Draw commit node circle
-            var radius = 4.5;
+            var radius = isDimmed ? 3.5 : 4.5;
             dc.DrawEllipse(nodeBrush, null, new Point(nodeX, halfHeight), radius, radius);
 
-            // Inner circle dot for sharp crisp high contrast look
-            var innerBrush = Brushes.White;
-            dc.DrawEllipse(innerBrush, null, new Point(nodeX, halfHeight), 1.8, 1.8);
+            // Inner circle dot
+            var innerBrush = isDimmed ? GetDimmedWhiteBrush() : Brushes.White;
+            dc.DrawEllipse(innerBrush, null, new Point(nodeX, halfHeight), isDimmed ? 1.2 : 1.8, isDimmed ? 1.2 : 1.8);
         }
 
         private static readonly Dictionary<string, SolidColorBrush> BrushCache = new(StringComparer.OrdinalIgnoreCase);
+        private static SolidColorBrush? _dimmedWhiteBrush;
 
-        private static SolidColorBrush GetBrush(string hex)
+        private static SolidColorBrush GetDimmedWhiteBrush()
         {
-            if (BrushCache.TryGetValue(hex, out var brush))
+            if (_dimmedWhiteBrush == null)
+            {
+                _dimmedWhiteBrush = new SolidColorBrush(Color.FromArgb(80, 200, 200, 200));
+                _dimmedWhiteBrush.Freeze();
+            }
+            return _dimmedWhiteBrush;
+        }
+
+        private static SolidColorBrush GetBrush(string hex, bool isDimmed)
+        {
+            var key = isDimmed ? $"{hex}_dim" : hex;
+            if (BrushCache.TryGetValue(key, out var brush))
             {
                 return brush;
             }
@@ -135,15 +147,20 @@ namespace Girt.Controls
             try
             {
                 var color = (Color)ColorConverter.ConvertFromString(hex);
+                if (isDimmed)
+                {
+                    color = Color.FromArgb(65, color.R, color.G, color.B);
+                }
                 var newBrush = new SolidColorBrush(color);
                 newBrush.Freeze();
-                BrushCache[hex] = newBrush;
+                BrushCache[key] = newBrush;
                 return newBrush;
             }
             catch
             {
-                var fallback = Brushes.CornflowerBlue;
-                BrushCache[hex] = fallback;
+                var fallback = isDimmed ? new SolidColorBrush(Color.FromArgb(65, 100, 149, 237)) : Brushes.CornflowerBlue;
+                fallback.Freeze();
+                BrushCache[key] = fallback;
                 return fallback;
             }
         }

@@ -22,6 +22,10 @@
         <converters:HexToBrushConverter x:Key="HexToBrushConverter" />
     </Window.Resources>
 
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding RefreshRepositoryCommand}" />
+    </Window.InputBindings>
+
     <Grid>
         <Grid.RowDefinitions>
             <!-- Top App Bar -->
@@ -191,19 +195,51 @@
                     </Button>
                 </StackPanel>
 
-                <!-- Right Actions: Reset HEAD, Refresh, Theme -->
+                <!-- Right Actions: Branch View Mode, Fetch, Reset HEAD, Refresh, Theme -->
                 <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Branch Association View Mode Selector -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="6,2"
+                            Margin="0,0,8,0"
+                            VerticalAlignment="Center"
+                            ToolTip="Branch Association Filter (relative to trunk -> branch)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⑂ View: " Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            <ComboBox SelectedValuePath="Tag"
+                                      SelectedValue="{Binding CommitHistory.AssociationMode, Mode=TwoWay}"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      FontSize="12"
+                                      FontWeight="SemiBold"
+                                      VerticalAlignment="Center">
+                                <ComboBoxItem Content="All Branches" Tag="{x:Static models:BranchAssociationMode.ShowAll}" />
+                                <ComboBoxItem Content="Hide Unrelated" Tag="{x:Static models:BranchAssociationMode.HideUnrelated}" />
+                                <ComboBoxItem Content="Dim Unrelated" Tag="{x:Static models:BranchAssociationMode.DimUnrelated}" />
+                            </ComboBox>
+                        </StackPanel>
+                    </Border>
+
+                    <Button Content="⬇ Fetch"
+                            Style="{StaticResource ToolButtonStyle}"
+                            Command="{Binding FetchAllCommand}"
+                            Margin="0,0,6,0"
+                            ToolTip="Fetch all remotes and prune deleted branches" />
+
                     <Button Content="↺ Reset HEAD"
                             Style="{StaticResource ToolButtonStyle}"
                             Command="{Binding ShowResetDialogCommand}"
                             Margin="0,0,6,0"
                             ToolTip="Reset HEAD to bring back or undo commits" />
 
-                    <Button Content="🔄 Refresh"
+                    <Button Content="🔄 Refresh (F5)"
                             Style="{StaticResource ToolButtonStyle}"
                             Command="{Binding RefreshRepositoryCommand}"
                             Margin="0,0,6,0"
-                            ToolTip="Refresh repository status and commit log" />
+                            ToolTip="Refresh repository status and commit log (Shortcut: F5)" />
 
                     <Button Content="🌓 Theme"
                             Style="{StaticResource ToolButtonStyle}"
@@ -295,6 +331,59 @@
                     <!-- Branches Tree / List -->
                     <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
+                            <!-- NEW BRANCHES (DISCOVERED ON REFRESH / FETCH) -->
+                            <Border Visibility="{Binding BranchList.HasNewBranches, Converter={StaticResource BoolToVisConverter}}"
+                                    Background="#1E10B981"
+                                    BorderBrush="#10B981"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="8,6"
+                                    Margin="0,0,0,10">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,6">
+                                        <TextBlock Text="{Binding BranchList.NewBranches.Count, StringFormat='✨ NEW BRANCHES ({0})'}"
+                                                   Foreground="#10B981"
+                                                   FontWeight="Bold"
+                                                   FontSize="11"
+                                                   VerticalAlignment="Center" />
+                                        <Button Content="Dismiss"
+                                                Style="{StaticResource ToolButtonStyle}"
+                                                FontSize="10"
+                                                Padding="4,0"
+                                                Command="{Binding BranchList.ClearNewBranchesCommand}"
+                                                HorizontalAlignment="Right"
+                                                ToolTip="Dismiss new branches list" />
+                                    </Grid>
+                                    <ListBox ItemsSource="{Binding BranchList.NewBranches}"
+                                             Style="{StaticResource ModernListBoxStyle}"
+                                             ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type models:GitBranch}">
+                                                <Grid Margin="2,2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding DisplayName}"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center" />
+                                                    <Button Grid.Column="1"
+                                                            Content="Checkout"
+                                                            Style="{StaticResource PrimaryButtonStyle}"
+                                                            FontSize="11"
+                                                            Padding="6,2"
+                                                            Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                            </Border>
+
                             <!-- LOCAL BRANCHES GROUP -->
                             <Expander IsExpanded="{Binding BranchList.IsLocalExpanded}"
                                       Header="Local Branches"
@@ -516,7 +605,19 @@
                               Foreground="{DynamicResource TextPrimaryBrush}"
                               BorderThickness="0"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                              ScrollViewer.CanContentScroll="True"
+                              VirtualizingStackPanel.IsVirtualizing="True"
+                              VirtualizingStackPanel.VirtualizationMode="Recycling"
+                              VirtualizingPanel.ScrollUnit="Item"
+                              VirtualizingPanel.CacheLength="10,10"
+                              VirtualizingPanel.CacheLengthUnit="Item">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="{x:Type ListViewItem}">
+                                <Setter Property="Opacity" Value="{Binding DisplayOpacity}" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
                         <ListView.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="Reset Branch to this Commit (Soft - keep changes staged)..."
@@ -780,11 +881,11 @@
                         <Grid.RowDefinitions>
                             <!-- Top Navigation / Actions -->
                             <RowDefinition Height="Auto" />
-                            <!-- Staged Files Group -->
-                            <RowDefinition Height="Auto" MaxHeight="220" />
-                            <!-- Unstaged Files Group -->
+                            <!-- Unstaged Files Group (TOP) -->
                             <RowDefinition Height="*" MinHeight="100" />
-                            <!-- Commit Message Box -->
+                            <!-- Staged Files Group (MIDDLE) -->
+                            <RowDefinition Height="Auto" MaxHeight="240" MinHeight="100" />
+                            <!-- Commit Message Box (BOTTOM) -->
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
@@ -796,113 +897,30 @@
                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                        VerticalAlignment="Center" />
 
-                            <Button Content="Stage All"
-                                    Style="{StaticResource ToolButtonStyle}"
-                                    Command="{Binding WorkingChanges.StageAllCommand}"
-                                    HorizontalAlignment="Right"
-                                    FontWeight="SemiBold"
-                                    Foreground="{DynamicResource TextAccentBrush}" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Content="{Binding WorkingChanges.StashCount, StringFormat='📥 Pop Stash ({0})'}"
+                                        Style="{StaticResource ToolButtonStyle}"
+                                        Command="{Binding WorkingChanges.StashPopCommand}"
+                                        IsEnabled="{Binding WorkingChanges.HasStashes}"
+                                        FontWeight="SemiBold"
+                                        FontSize="11"
+                                        Padding="6,2"
+                                        Margin="0,0,6,0"
+                                        ToolTip="Pop top stash onto working tree (git stash pop)" />
+
+                                <Button Content="Stage All ⬇"
+                                        Style="{StaticResource ToolButtonStyle}"
+                                        Command="{Binding WorkingChanges.StageAllCommand}"
+                                        FontWeight="SemiBold"
+                                        Foreground="{DynamicResource TextAccentBrush}"
+                                        FontSize="11"
+                                        Padding="6,2"
+                                        ToolTip="Stage all unstaged files" />
+                            </StackPanel>
                         </Grid>
 
-                        <!-- STAGED FILES (Row 1) -->
+                        <!-- UNSTAGED FILES (Row 1 - TOP) -->
                         <Border Grid.Row="1"
-                                Background="{DynamicResource WindowBackgroundBrush}"
-                                BorderBrush="{DynamicResource BorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Padding="8"
-                                Margin="0,0,0,10">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                </Grid.RowDefinitions>
-
-                                <Grid Grid.Row="0" Margin="0,0,0,6">
-                                    <TextBlock Text="{Binding WorkingChanges.StagedFiles.Count, StringFormat='STAGED CHANGES ({0})'}"
-                                               FontWeight="Bold"
-                                               FontSize="11"
-                                               Foreground="#10B981"
-                                               VerticalAlignment="Center" />
-
-                                    <Button Content="Unstage All"
-                                            Style="{StaticResource ToolButtonStyle}"
-                                            Command="{Binding WorkingChanges.UnstageAllCommand}"
-                                            HorizontalAlignment="Right"
-                                            FontSize="11"
-                                            Padding="4,1" />
-                                </Grid>
-
-                                <ListBox Grid.Row="1"
-                                         ItemsSource="{Binding WorkingChanges.StagedFiles}"
-                                         SelectedItem="{Binding WorkingChanges.SelectedFile}"
-                                         Style="{StaticResource ModernListBoxStyle}"
-                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         MaxHeight="160">
-                                    <ListBox.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="Unstage File"
-                                                      Command="{Binding WorkingChanges.UnstageFileCommand}"
-                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
-                                            <Separator />
-                                            <MenuItem Header="Add to .gitignore"
-                                                      Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
-                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
-                                            <MenuItem Header="Add extension to .gitignore (*.ext)"
-                                                      Command="{Binding WorkingChanges.IgnoreExtensionCommand}"
-                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
-                                        </ContextMenu>
-                                    </ListBox.ContextMenu>
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate DataType="{x:Type models:GitWorkingFile}">
-                                            <Grid Margin="2,2">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-
-                                                <!-- Status Badge -->
-                                                <Border Grid.Column="0"
-                                                        Background="{Binding StatusColor, Converter={StaticResource HexToBrushConverter}}"
-                                                        CornerRadius="3"
-                                                        Width="16" Height="16"
-                                                        Margin="0,0,6,0">
-                                                    <TextBlock Text="{Binding StatusBadge}"
-                                                               Foreground="#FFFFFF"
-                                                               FontSize="10"
-                                                               FontWeight="Bold"
-                                                               HorizontalAlignment="Center"
-                                                               VerticalAlignment="Center" />
-                                                </Border>
-
-                                                <!-- File Path -->
-                                                <TextBlock Grid.Column="1"
-                                                           Text="{Binding DisplayName}"
-                                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                                           FontSize="12"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center" />
-
-                                                <!-- Unstage button -->
-                                                <Button Grid.Column="2"
-                                                        Content="-"
-                                                        Style="{StaticResource ToolButtonStyle}"
-                                                        FontWeight="Bold"
-                                                        FontSize="12"
-                                                        Padding="6,0"
-                                                        Command="{Binding DataContext.WorkingChanges.UnstageFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                        CommandParameter="{Binding}"
-                                                        ToolTip="Unstage this file" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                            </Grid>
-                        </Border>
-
-                        <!-- UNSTAGED FILES (Row 2) -->
-                        <Border Grid.Row="2"
                                 Background="{DynamicResource WindowBackgroundBrush}"
                                 BorderBrush="{DynamicResource BorderBrush}"
                                 BorderThickness="1"
@@ -921,6 +939,14 @@
                                                FontSize="11"
                                                Foreground="#F59E0B"
                                                VerticalAlignment="Center" />
+
+                                    <Button Content="Stage All ⬇"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding WorkingChanges.StageAllCommand}"
+                                            HorizontalAlignment="Right"
+                                            FontSize="11"
+                                            Padding="4,1"
+                                            ToolTip="Stage all unstaged files" />
                                 </Grid>
 
                                 <ListBox Grid.Row="1"
@@ -977,13 +1003,14 @@
                                                            TextTrimming="CharacterEllipsis"
                                                            VerticalAlignment="Center" />
 
-                                                <!-- Stage button (+) -->
+                                                <!-- Stage button -->
                                                 <Button Grid.Column="2"
-                                                        Content="+"
+                                                        Content="⬇ Stage"
                                                         Style="{StaticResource ToolButtonStyle}"
-                                                        FontWeight="Bold"
-                                                        FontSize="12"
-                                                        Padding="6,0"
+                                                        FontWeight="SemiBold"
+                                                        FontSize="11"
+                                                        Padding="6,1"
+                                                        Foreground="#10B981"
                                                         Command="{Binding DataContext.WorkingChanges.StageFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                         CommandParameter="{Binding}"
                                                         ToolTip="Stage this file" />
@@ -994,6 +1021,7 @@
                                                         Style="{StaticResource ToolButtonStyle}"
                                                         FontSize="10"
                                                         Padding="4,0"
+                                                        Margin="4,0,0,0"
                                                         Foreground="#EF4444"
                                                         Command="{Binding DataContext.WorkingChanges.DiscardChangesCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                         CommandParameter="{Binding}"
@@ -1005,7 +1033,115 @@
                             </Grid>
                         </Border>
 
-                        <!-- COMMIT MESSAGE BOX & ACTION (Row 3) -->
+                        <!-- STAGED FILES (Row 2 - MIDDLE) -->
+                        <Border Grid.Row="2"
+                                Background="{DynamicResource WindowBackgroundBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,6">
+                                    <TextBlock Text="{Binding WorkingChanges.StagedFiles.Count, StringFormat='STAGED CHANGES ({0})'}"
+                                               FontWeight="Bold"
+                                               FontSize="11"
+                                               Foreground="#10B981"
+                                               VerticalAlignment="Center" />
+
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Content="📦 Stash Staged"
+                                                Style="{StaticResource ToolButtonStyle}"
+                                                Command="{Binding WorkingChanges.StashStagedCommand}"
+                                                IsEnabled="{Binding WorkingChanges.HasStagedFiles}"
+                                                FontSize="11"
+                                                Padding="6,1"
+                                                Margin="0,0,6,0"
+                                                ToolTip="Stash currently staged changes (git stash push --staged)" />
+
+                                        <Button Content="Unstage All ⬆"
+                                                Style="{StaticResource ToolButtonStyle}"
+                                                Command="{Binding WorkingChanges.UnstageAllCommand}"
+                                                FontSize="11"
+                                                Padding="6,1"
+                                                ToolTip="Unstage all staged files" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <ListBox Grid.Row="1"
+                                         ItemsSource="{Binding WorkingChanges.StagedFiles}"
+                                         SelectedItem="{Binding WorkingChanges.SelectedFile}"
+                                         Style="{StaticResource ModernListBoxStyle}"
+                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         MaxHeight="180">
+                                    <ListBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Unstage File"
+                                                      Command="{Binding WorkingChanges.UnstageFileCommand}"
+                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
+                                            <Separator />
+                                            <MenuItem Header="Add to .gitignore"
+                                                      Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
+                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
+                                            <MenuItem Header="Add extension to .gitignore (*.ext)"
+                                                      Command="{Binding WorkingChanges.IgnoreExtensionCommand}"
+                                                      CommandParameter="{Binding WorkingChanges.SelectedFile}" />
+                                        </ContextMenu>
+                                    </ListBox.ContextMenu>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type models:GitWorkingFile}">
+                                            <Grid Margin="2,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- Status Badge -->
+                                                <Border Grid.Column="0"
+                                                        Background="{Binding StatusColor, Converter={StaticResource HexToBrushConverter}}"
+                                                        CornerRadius="3"
+                                                        Width="16" Height="16"
+                                                        Margin="0,0,6,0">
+                                                    <TextBlock Text="{Binding StatusBadge}"
+                                                               Foreground="#FFFFFF"
+                                                               FontSize="10"
+                                                               FontWeight="Bold"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center" />
+                                                </Border>
+
+                                                <!-- File Path -->
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding DisplayName}"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center" />
+
+                                                <!-- Unstage button -->
+                                                <Button Grid.Column="2"
+                                                        Content="⬆ Unstage"
+                                                        Style="{StaticResource ToolButtonStyle}"
+                                                        FontWeight="SemiBold"
+                                                        FontSize="11"
+                                                        Padding="6,1"
+                                                        Command="{Binding DataContext.WorkingChanges.UnstageFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"
+                                                        ToolTip="Unstage this file" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+
+                        <!-- COMMIT MESSAGE BOX & ACTION (Row 3 - BOTTOM) -->
                         <Border Grid.Row="3"
                                 Background="{DynamicResource WindowBackgroundBrush}"
                                 BorderBrush="{DynamicResource BorderBrush}"
@@ -1019,21 +1155,15 @@
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            Margin="0,0,0,6" />
 
-                                <!-- Subject -->
-                                <TextBox Text="{Binding WorkingChanges.CommitSubject, UpdateSourceTrigger=PropertyChanged}"
+                                <!-- Unified Single Commit Message Box -->
+                                <TextBox Text="{Binding WorkingChanges.CommitMessage, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource ModernTextBoxStyle}"
-                                         Margin="0,0,0,6"
-                                         ToolTip="Summary of commit (e.g. Fix button alignment)..." />
-
-                                <!-- Description -->
-                                <TextBox Text="{Binding WorkingChanges.CommitDescription, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource ModernTextBoxStyle}"
-                                         Height="55"
+                                         Height="80"
                                          AcceptsReturn="True"
                                          TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
                                          Margin="0,0,0,10"
-                                         ToolTip="Extended description (optional)..." />
+                                         ToolTip="Enter commit message (e.g. Fix navbar alignment)..." />
 
                                 <!-- Commit Button -->
                                 <Button Content="{Binding CurrentBranch, StringFormat='✓ Commit to {0}'}"
@@ -1041,6 +1171,9 @@
                                         Command="{Binding WorkingChanges.CommitCommand}"
                                         Background="#238636"
                                         BorderBrush="#238636"
+                                        FontSize="13"
+                                        FontWeight="SemiBold"
+                                        Padding="10,8"
                                         HorizontalAlignment="Stretch" />
                             </StackPanel>
                         </Border>

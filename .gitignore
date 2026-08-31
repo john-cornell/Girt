@@ -16,3 +16,10 @@ TestResults/
 
 ## Code Index
 .codeidx/
+
+## Installer
+installer/Output/
+installer/*.pfx
+installer/code-signing-password.txt
+*.lnk
+

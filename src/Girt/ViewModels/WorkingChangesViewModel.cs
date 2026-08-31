@@ -13,16 +13,37 @@ namespace Girt.ViewModels
     {
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
-        private readonly Func<Task> _onRepositoryUpdated;
+        private readonly Func<bool, Task> _onRepositoryUpdated;
 
         [ObservableProperty]
         private GitWorkingFile? _selectedFile;
 
         [ObservableProperty]
-        private string _commitSubject = string.Empty;
+        private string _commitMessage = string.Empty;
 
         [ObservableProperty]
-        private string _commitDescription = string.Empty;
+        private int _stashCount;
+
+        [ObservableProperty]
+        private bool _hasStashes;
+
+        public string CommitSubject
+        {
+            get => CommitMessage;
+            set => CommitMessage = value;
+        }
+
+        public string CommitDescription
+        {
+            get => string.Empty;
+            set
+            {
+                if (!string.IsNullOrEmpty(value))
+                {
+                    CommitMessage = string.IsNullOrEmpty(CommitMessage) ? value : $"{CommitMessage}\n\n{value}";
+                }
+            }
+        }
 
         [ObservableProperty]
         private bool _isLoading;
@@ -35,7 +56,7 @@ namespace Girt.ViewModels
         public bool HasStagedFiles => StagedFiles.Count > 0;
         public bool HasUnstagedFiles => UnstagedFiles.Count > 0;
 
-        public WorkingChangesViewModel(IGitService gitService, Func<string> getRepoPath, Func<Task> onRepositoryUpdated)
+        public WorkingChangesViewModel(IGitService gitService, Func<string> getRepoPath, Func<bool, Task> onRepositoryUpdated)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
@@ -50,7 +71,14 @@ namespace Girt.ViewModels
             IsLoading = true;
             try
             {
-                var changes = await _gitService.GetWorkingTreeChangesAsync(repoPath);
+                var changesTask = _gitService.GetWorkingTreeChangesAsync(repoPath);
+                var stashCountTask = _gitService.GetStashCountAsync(repoPath);
+
+                await Task.WhenAll(changesTask, stashCountTask);
+
+                var changes = await changesTask;
+                StashCount = await stashCountTask;
+                HasStashes = StashCount > 0;
                 
                 StagedFiles.Clear();
                 foreach (var f in changes.StagedFiles) StagedFiles.Add(f);
@@ -66,13 +94,13 @@ namespace Girt.ViewModels
                 {
                     await LoadFileDiffAsync(SelectedFile);
                 }
-                else if (StagedFiles.Count > 0)
-                {
-                    SelectedFile = StagedFiles[0];
-                }
                 else if (UnstagedFiles.Count > 0)
                 {
                     SelectedFile = UnstagedFiles[0];
+                }
+                else if (StagedFiles.Count > 0)
+                {
+                    SelectedFile = StagedFiles[0];
                 }
                 else
                 {
@@ -99,7 +127,7 @@ namespace Girt.ViewModels
             if (string.IsNullOrEmpty(repoPath)) return;
 
             var rawDiff = await _gitService.GetWorkingTreeFileDiffAsync(repoPath, file.Path, file.IsStaged);
-            var lines = DiffParser.ParseUnifiedDiff(rawDiff);
+            var lines = await Task.Run(() => DiffParser.ParseUnifiedDiff(rawDiff));
 
             foreach (var l in lines)
             {
@@ -120,7 +148,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
         }
 
@@ -137,7 +165,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
         }
 
@@ -151,7 +179,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
         }
 
@@ -165,7 +193,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
         }
 
@@ -190,7 +218,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
             else
             {
@@ -211,7 +239,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
             else
             {
@@ -232,7 +260,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                await _onRepositoryUpdated(false);
             }
             else
             {
@@ -241,10 +269,98 @@ namespace Girt.ViewModels
         }
 
         [RelayCommand]
+        public async Task StashStagedAsync()
+        {
+            if (StagedFiles.Count == 0)
+            {
+                MessageBox.Show("There are no staged changes to stash. Stage files first.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var message = string.IsNullOrWhiteSpace(CommitMessage)
+                ? $"Staged changes ({DateTime.Now:yyyy-MM-dd HH:mm:ss})"
+                : CommitMessage.Trim();
+
+            IsLoading = true;
+            try
+            {
+                var (success, output) = await _gitService.StashStagedAsync(repoPath, message);
+                if (success)
+                {
+                    await LoadChangesAsync();
+                    await _onRepositoryUpdated(false);
+                }
+                else
+                {
+                    MessageBox.Show($"Stash failed:\n{output}", "Stash Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
+        public async Task StashPopAsync()
+        {
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            IsLoading = true;
+            try
+            {
+                var (success, output) = await _gitService.StashPopAsync(repoPath);
+                if (success)
+                {
+                    await LoadChangesAsync();
+                    await _onRepositoryUpdated(false);
+                }
+                else
+                {
+                    MessageBox.Show($"Pop stash failed:\n{output}", "Pop Stash Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
+        public async Task StashApplyAsync()
+        {
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            IsLoading = true;
+            try
+            {
+                var (success, output) = await _gitService.StashApplyAsync(repoPath);
+                if (success)
+                {
+                    await LoadChangesAsync();
+                    await _onRepositoryUpdated(false);
+                }
+                else
+                {
+                    MessageBox.Show($"Apply stash failed:\n{output}", "Apply Stash Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
         public async Task CommitAsync()
         {
-            var subject = CommitSubject?.Trim();
-            if (string.IsNullOrEmpty(subject))
+            var message = CommitMessage?.Trim();
+            if (string.IsNullOrEmpty(message))
             {
                 MessageBox.Show("Please enter a commit message.", "Commit Message Required", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
@@ -252,28 +368,31 @@ namespace Girt.ViewModels
 
             if (StagedFiles.Count == 0)
             {
-                MessageBox.Show("There are no staged changes to commit. Stage your files first.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("There are no staged changes to commit. Stage files first.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var fullMessage = string.IsNullOrEmpty(CommitDescription?.Trim())
-                ? subject
-                : $"{subject}\n\n{CommitDescription.Trim()}";
-
-            var (success, output) = await _gitService.CommitAsync(repoPath, fullMessage);
-            if (success)
+            IsLoading = true;
+            try
             {
-                CommitSubject = string.Empty;
-                CommitDescription = string.Empty;
-                await LoadChangesAsync();
-                await _onRepositoryUpdated();
+                var (success, output) = await _gitService.CommitAsync(repoPath, message);
+                if (success)
+                {
+                    CommitMessage = string.Empty;
+                    await LoadChangesAsync();
+                    await _onRepositoryUpdated(true); // Is new commit
+                }
+                else
+                {
+                    MessageBox.Show($"Commit failed:\n{output}", "Commit Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
-            else
+            finally
             {
-                MessageBox.Show($"Commit failed:\n{output}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                IsLoading = false;
             }
         }
     }

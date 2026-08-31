@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Girt.Models;
 using Girt.Services;
@@ -20,6 +21,7 @@ namespace Girt.Tests
         public string? LastResetTarget { get; set; }
         public GitResetMode? LastResetMode { get; set; }
         public string? LastCommitMessage { get; set; }
+        public bool FetchAllCalled { get; set; }
 
         public Task<string?> GetRepositoryRootAsync(string directoryPath) => Task.FromResult(RepoRoot);
         public Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitBranch>>(Branches);
@@ -86,7 +88,7 @@ namespace Girt.Tests
                 f.IsStaged = false;
                 Changes.UnstagedFiles.Add(f);
             }
-            Changes.StagedFiles.Clear();
+            Changes.UnstagedFiles.Clear();
             return Task.FromResult((true, "Unstaged all"));
         }
 
@@ -106,10 +108,34 @@ namespace Girt.Tests
         public Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged) => Task.FromResult(RawDiff);
         public Task<(bool Success, string Output)> PushAsync(string repoPath) => Task.FromResult((true, "Pushed"));
         public Task<(bool Success, string Output)> PullAsync(string repoPath) => Task.FromResult((true, "Pulled"));
+        public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
+        {
+            FetchAllCalled = true;
+            return Task.FromResult((true, "Fetched all remotes"));
+        }
+        public Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2) => Task.FromResult<string?>("root123");
         public Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false)
         {
             Changes.UnstagedFiles.RemoveAll(f => f.Path == filePath);
             return Task.FromResult((true, "Ignored"));
+        }
+
+        public int StashCount { get; set; }
+        public Task<int> GetStashCountAsync(string repoPath) => Task.FromResult(StashCount);
+        public Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null)
+        {
+            StashCount++;
+            Changes.StagedFiles.Clear();
+            return Task.FromResult((true, "Stashed staged changes"));
+        }
+        public Task<(bool Success, string Output)> StashPopAsync(string repoPath)
+        {
+            if (StashCount > 0) StashCount--;
+            return Task.FromResult((true, "Popped top stash"));
+        }
+        public Task<(bool Success, string Output)> StashApplyAsync(string repoPath)
+        {
+            return Task.FromResult((true, "Applied top stash"));
         }
     }
 
@@ -142,6 +168,92 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task BranchListViewModel_DetectsNewBranchesFromFetchOrPull()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "main", IsRemote = false },
+                    new() { Name = "origin/main", IsRemote = true, RemoteName = "origin" }
+                }
+            };
+
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask);
+            await vm.LoadBranchesAsync();
+            Assert.Empty(vm.NewBranches);
+            Assert.False(vm.HasNewBranches);
+
+            // New branch appeared in remote after fetch
+            fakeGit.Branches.Add(new GitBranch { Name = "origin/feature/cool-stuff", IsRemote = true, RemoteName = "origin" });
+            await vm.LoadBranchesAsync();
+
+            Assert.Single(vm.NewBranches);
+            Assert.True(vm.HasNewBranches);
+            Assert.Equal("origin/feature/cool-stuff", vm.NewBranches[0].Name);
+
+            // Checkout new branch
+            await vm.CheckoutBranchAsync(vm.NewBranches[0]);
+            Assert.Empty(vm.NewBranches);
+            Assert.False(vm.HasNewBranches);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_BranchAssociation_FiltersOrDimsUnrelatedBranches()
+        {
+            // Topology:
+            // trunk (main): root -> c1 -> c2 (tip: main)
+            // branch A: c1 -> a1 -> a2 (tip: feature/A)
+            // branch B: a2 -> b1 (tip: feature/B)
+            // branch X (unrelated): root -> x1 (tip: feature/X)
+            var cRoot = new GitCommit { Hash = "root", Subject = "Initial commit" };
+            var c1 = new GitCommit { Hash = "c1", ParentHashes = new List<string> { "root" }, Subject = "Trunk commit 1" };
+            var c2 = new GitCommit { Hash = "c2", ParentHashes = new List<string> { "c1" }, Subject = "Trunk commit 2" };
+            var a1 = new GitCommit { Hash = "a1", ParentHashes = new List<string> { "c1" }, Subject = "A commit 1" };
+            var a2 = new GitCommit { Hash = "a2", ParentHashes = new List<string> { "a1" }, Subject = "A commit 2" };
+            var b1 = new GitCommit { Hash = "b1", ParentHashes = new List<string> { "a2" }, Subject = "B commit 1" };
+            var x1 = new GitCommit { Hash = "x1", ParentHashes = new List<string> { "root" }, Subject = "X commit 1" };
+
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { b1, a2, a1, c2, c1, x1, cRoot },
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "main", TipCommitHash = "c2" },
+                    new() { Name = "feature/A", TipCommitHash = "a2" },
+                    new() { Name = "feature/B", TipCommitHash = "b1" },
+                    new() { Name = "feature/X", TipCommitHash = "x1" }
+                }
+            };
+
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            vm.SetBranches(fakeGit.Branches, "feature/B");
+            await vm.LoadCommitsAsync();
+
+            // Default: ShowAll
+            Assert.Equal(7, vm.FilteredCommits.Count);
+
+            // HideUnrelated Mode:
+            // Associated should include: root, c1, c2 (trunk), a1, a2 (A), b1 (B) -> total 6
+            // Unrelated x1 should be hidden
+            vm.AssociationMode = BranchAssociationMode.HideUnrelated;
+            Assert.Equal(6, vm.FilteredCommits.Count);
+            Assert.DoesNotContain(vm.FilteredCommits, c => c.Hash == "x1");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "b1");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "a2");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "c2");
+
+            // DimUnrelated Mode:
+            // All 7 commits displayed, but x1 has IsDimmed = true
+            vm.AssociationMode = BranchAssociationMode.DimUnrelated;
+            Assert.Equal(7, vm.FilteredCommits.Count);
+            var xCommit = vm.FilteredCommits.First(c => c.Hash == "x1");
+            Assert.True(xCommit.IsDimmed);
+            var bCommit = vm.FilteredCommits.First(c => c.Hash == "b1");
+            Assert.False(bCommit.IsDimmed);
+        }
+
+        [Fact]
         public async Task CommitHistoryViewModel_FiltersByIndividualColumns()
         {
             var fakeGit = new FakeGitService
@@ -161,10 +273,12 @@ namespace Girt.Tests
 
             // Filter by author
             vm.FilterAuthor = "Alice";
+            vm.ApplyFilter();
             Assert.Equal(2, vm.FilteredCommits.Count);
 
             // Additional filter by subject
             vm.FilterSubject = "README";
+            vm.ApplyFilter();
             Assert.Single(vm.FilteredCommits);
             Assert.Equal("3333333cccccccc", vm.FilteredCommits[0].Hash);
 
@@ -174,6 +288,7 @@ namespace Girt.Tests
 
             // Filter by SHA
             vm.FilterSha = "2222";
+            vm.ApplyFilter();
             Assert.Single(vm.FilteredCommits);
             Assert.Equal("Bob", vm.FilteredCommits[0].AuthorName);
         }
@@ -209,7 +324,7 @@ namespace Girt.Tests
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = false });
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "readme.md", IsStaged = false });
 
-            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask);
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
             await vm.LoadChangesAsync();
 
             Assert.Equal(2, vm.UnstagedFiles.Count);
@@ -234,13 +349,38 @@ namespace Girt.Tests
             var fakeGit = new FakeGitService();
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "debug.log", IsStaged = false });
 
-            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask);
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
             await vm.LoadChangesAsync();
 
             Assert.Single(vm.UnstagedFiles);
 
             await vm.AddToGitIgnoreAsync(vm.UnstagedFiles[0]);
             Assert.Empty(vm.UnstagedFiles);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_StashStaged_And_PopStash_Succeeds()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "Feature.cs", IsStaged = true });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
+            await vm.LoadChangesAsync();
+
+            Assert.True(vm.HasStagedFiles);
+            Assert.Equal(0, vm.StashCount);
+            Assert.False(vm.HasStashes);
+
+            // Stash staged changes
+            await vm.StashStagedAsync();
+            Assert.Empty(vm.StagedFiles);
+            Assert.Equal(1, vm.StashCount);
+            Assert.True(vm.HasStashes);
+
+            // Pop stash
+            await vm.StashPopAsync();
+            Assert.Equal(0, vm.StashCount);
+            Assert.False(vm.HasStashes);
         }
 
         [Fact]

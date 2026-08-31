@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Girt.Models;
 using Girt.Services;
@@ -82,7 +84,7 @@ namespace Girt.ViewModels
             try
             {
                 var rawDiff = await _gitService.GetRawFileDiffAsync(repoPath, Commit.Hash, file.Path);
-                var parsedLines = DiffParser.ParseUnifiedDiff(rawDiff);
+                var parsedLines = await Task.Run(() => DiffParser.ParseUnifiedDiff(rawDiff));
 
                 foreach (var line in parsedLines)
                 {
@@ -107,7 +109,7 @@ namespace Girt.ViewModels
             var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, ignoreByExtension: false);
             if (success)
             {
-                System.Windows.MessageBox.Show($"Added '{file.Path}' to .gitignore", ".gitignore Updated", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                MessageBox.Show($"Added '{file.Path}' to .gitignore", ".gitignore Updated", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
 
@@ -124,7 +126,7 @@ namespace Girt.ViewModels
             if (success)
             {
                 var ext = System.IO.Path.GetExtension(file.Path);
-                System.Windows.MessageBox.Show($"Added '*{ext}' to .gitignore", ".gitignore Updated", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                MessageBox.Show($"Added '*{ext}' to .gitignore", ".gitignore Updated", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
     }

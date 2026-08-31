@@ -10,6 +10,13 @@ namespace Girt.Models
         Hard   // Discards all changes, resets index & working tree
     }
 
+    public enum BranchAssociationMode
+    {
+        ShowAll,       // Display full commit graph without filtering
+        HideUnrelated, // Only show trunk + commits on the active branch chain (trunk -> A -> B)
+        DimUnrelated   // Dim/grey out unrelated branch commits while showing the whole graph
+    }
+
     public class GitWorkingFile
     {
         public string Path { get; set; } = string.Empty;
@@ -97,6 +104,11 @@ namespace Girt.Models
         public int LaneIndex { get; set; }
         public string LaneColor { get; set; } = "#3B82F6";
         public List<GraphConnection> Connections { get; set; } = new();
+
+        // Branch association & dimming state
+        public bool IsAssociated { get; set; } = true;
+        public bool IsDimmed { get; set; } = false;
+        public double DisplayOpacity => IsDimmed ? 0.35 : 1.0;
     }
 
     public enum GitRefType

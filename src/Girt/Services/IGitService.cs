@@ -29,6 +29,12 @@ namespace Girt.Services
         Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
         Task<(bool Success, string Output)> PullAsync(string repoPath);
+        Task<(bool Success, string Output)> FetchAllAsync(string repoPath);
+        Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2);
         Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false);
+        Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null);
+        Task<(bool Success, string Output)> StashPopAsync(string repoPath);
+        Task<(bool Success, string Output)> StashApplyAsync(string repoPath);
+        Task<int> GetStashCountAsync(string repoPath);
     }
 }

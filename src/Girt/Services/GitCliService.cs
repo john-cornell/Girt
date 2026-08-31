@@ -283,6 +283,22 @@ namespace Girt.Services
             return (success, (output + "\n" + error).Trim());
         }
 
+        public async Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "fetch --all --prune");
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        public async Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"merge-base \"{ref1}\" \"{ref2}\"");
+            if (success && !string.IsNullOrWhiteSpace(output))
+            {
+                return output.Trim();
+            }
+            return null;
+        }
+
         public async Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false)
         {
             if (string.IsNullOrWhiteSpace(repoPath) || string.IsNullOrWhiteSpace(filePath))
@@ -325,6 +341,37 @@ namespace Girt.Services
             {
                 return (false, ex.Message);
             }
+        }
+
+        public async Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null)
+        {
+            var msgArg = string.IsNullOrWhiteSpace(message) ? "" : $" -m \"{message.Replace("\"", "\\\"")}\"";
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push --staged{msgArg}");
+            if (!success)
+            {
+                // Fallback for git versions that don't support --staged
+                (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push -k{msgArg}");
+            }
+            return (success, success ? (string.IsNullOrEmpty(output) ? "Stashed staged changes" : output.Trim()) : error);
+        }
+
+        public async Task<(bool Success, string Output)> StashPopAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash pop");
+            return (success, success ? (string.IsNullOrEmpty(output) ? "Popped top stash" : output.Trim()) : error);
+        }
+
+        public async Task<(bool Success, string Output)> StashApplyAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash apply");
+            return (success, success ? (string.IsNullOrEmpty(output) ? "Applied top stash" : output.Trim()) : error);
+        }
+
+        public async Task<int> GetStashCountAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list");
+            if (!success || string.IsNullOrWhiteSpace(output)) return 0;
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         }
 
         public async Task<(bool Success, string Output)> ResetHeadAsync(string repoPath, string targetRef, GitResetMode mode)

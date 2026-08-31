@@ -23,11 +23,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "v0.1.2";
-
-        public string WindowTitle => string.IsNullOrEmpty(RepositoryPath)
-            ? $"Girt {AppVersion} - Git Client"
-            : $"Girt {AppVersion} - {RepositoryName} [{CurrentBranch}]";
+        public const string AppVersion = "0.2.0";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -38,15 +34,25 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private string _currentBranch = "-";
 
-        partial void OnRepositoryPathChanged(string value) => OnPropertyChanged(nameof(WindowTitle));
-        partial void OnRepositoryNameChanged(string value) => OnPropertyChanged(nameof(WindowTitle));
-        partial void OnCurrentBranchChanged(string value) => OnPropertyChanged(nameof(WindowTitle));
-
         [ObservableProperty]
         private GitRepoStatus _repoStatus = new();
 
         [ObservableProperty]
         private ActiveViewMode _currentView = ActiveViewMode.History;
+
+        [ObservableProperty]
+        private string _windowTitle = $"Girt v{AppVersion} - Modern Git Client";
+
+        partial void OnRepositoryNameChanged(string value) => UpdateWindowTitle();
+        partial void OnCurrentBranchChanged(string value) => UpdateWindowTitle();
+        partial void OnRepositoryPathChanged(string value) => UpdateWindowTitle();
+
+        private void UpdateWindowTitle()
+        {
+            WindowTitle = string.IsNullOrEmpty(RepositoryPath)
+                ? $"Girt v{AppVersion} - Modern Git Client"
+                : $"Girt v{AppVersion} - {RepositoryName} [{CurrentBranch}] ({RepositoryPath})";
+        }
 
         [ObservableProperty]
         private bool _isLoading;
@@ -94,6 +100,15 @@ namespace Girt.ViewModels
             CommitHistory = new CommitHistoryViewModel(_gitService, () => RepositoryPath, OnCommitSelected);
             CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath);
             WorkingChanges = new WorkingChangesViewModel(_gitService, () => RepositoryPath, OnWorkingChangesUpdatedAsync);
+
+            // Hook branch selection change to update association view immediately
+            BranchList.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(BranchList.SelectedBranch) && BranchList.SelectedBranch != null)
+                {
+                    CommitHistory.SetBranches(BranchList.AllBranches, BranchList.SelectedBranch.Name);
+                }
+            };
 
             LoadRecentRepositories();
         }
@@ -158,11 +173,18 @@ namespace Girt.ViewModels
 
             try
             {
-                CurrentBranch = await _gitService.GetCurrentBranchAsync(RepositoryPath) ?? "-";
-                RepoStatus = await _gitService.GetRepoStatusAsync(RepositoryPath);
-                await BranchList.LoadBranchesAsync();
+                var branchTask = _gitService.GetCurrentBranchAsync(RepositoryPath);
+                var statusTask = _gitService.GetRepoStatusAsync(RepositoryPath);
+                var branchListTask = BranchList.LoadBranchesAsync();
+                var workingChangesTask = WorkingChanges.LoadChangesAsync();
+
+                await Task.WhenAll(branchTask, statusTask, branchListTask, workingChangesTask);
+
+                CurrentBranch = await branchTask ?? "-";
+                RepoStatus = await statusTask;
+                CommitHistory.SetBranches(BranchList.AllBranches, CurrentBranch);
                 await CommitHistory.LoadCommitsAsync();
-                await WorkingChanges.LoadChangesAsync();
+
                 StatusMessage = $"Loaded {CommitHistory.FilteredCommits.Count} commits, {RepoStatus.UncommittedCount} uncommitted changes.";
             }
             catch (Exception ex)
@@ -235,6 +257,25 @@ namespace Girt.ViewModels
                 {
                     MessageBox.Show($"Pull failed:\n{output}", "Git Pull Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
+        public async Task FetchAllAsync()
+        {
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            IsLoading = true;
+            StatusMessage = "Fetching all remotes...";
+
+            try
+            {
+                await BranchList.FetchAllAsync();
+                await RefreshRepositoryAsync();
             }
             finally
             {
@@ -382,10 +423,13 @@ namespace Girt.ViewModels
             await RefreshRepositoryAsync();
         }
 
-        private async Task OnWorkingChangesUpdatedAsync()
+        private async Task OnWorkingChangesUpdatedAsync(bool isNewCommit)
         {
             RepoStatus = await _gitService.GetRepoStatusAsync(RepositoryPath);
-            await CommitHistory.LoadCommitsAsync();
+            if (isNewCommit)
+            {
+                await RefreshRepositoryAsync();
+            }
         }
 
         private void OnCommitSelected(GitCommit? commit)
