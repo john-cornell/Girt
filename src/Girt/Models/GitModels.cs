@@ -12,9 +12,11 @@ namespace Girt.Models
 
     public enum BranchAssociationMode
     {
-        ShowAll,       // Display full commit graph without filtering
-        HideUnrelated, // Only show trunk + commits on the active branch chain (trunk -> A -> B)
-        DimUnrelated   // Dim/grey out unrelated branch commits while showing the whole graph
+        ShowAll,            // Display full commit graph without filtering
+        DimBeyondTrunk,     // Dim everything except active branch down to trunk fork point (Branch -> Trunk fork)
+        HideBeyondTrunk,    // Hide everything except active branch down to trunk fork point (Branch -> Trunk fork)
+        DimUnrelated,       // Dim unrelated branch commits while keeping full trunk lineage
+        HideUnrelated       // Hide unrelated branch commits while keeping full trunk lineage
     }
 
     public class GitWorkingFile

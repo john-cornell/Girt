@@ -217,8 +217,10 @@
                                       FontWeight="SemiBold"
                                       VerticalAlignment="Center">
                                 <ComboBoxItem Content="All Branches" Tag="{x:Static models:BranchAssociationMode.ShowAll}" />
-                                <ComboBoxItem Content="Hide Unrelated" Tag="{x:Static models:BranchAssociationMode.HideUnrelated}" />
-                                <ComboBoxItem Content="Dim Unrelated" Tag="{x:Static models:BranchAssociationMode.DimUnrelated}" />
+                                <ComboBoxItem Content="Dim to Trunk Fork" Tag="{x:Static models:BranchAssociationMode.DimBeyondTrunk}" />
+                                <ComboBoxItem Content="Hide to Trunk Fork" Tag="{x:Static models:BranchAssociationMode.HideBeyondTrunk}" />
+                                <ComboBoxItem Content="Dim Unrelated (with Trunk)" Tag="{x:Static models:BranchAssociationMode.DimUnrelated}" />
+                                <ComboBoxItem Content="Hide Unrelated (with Trunk)" Tag="{x:Static models:BranchAssociationMode.HideUnrelated}" />
                             </ComboBox>
                         </StackPanel>
                     </Border>

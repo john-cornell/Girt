@@ -233,7 +233,30 @@ namespace Girt.Tests
             // Default: ShowAll
             Assert.Equal(7, vm.FilteredCommits.Count);
 
-            // HideUnrelated Mode:
+            // HideBeyondTrunk Mode (Branch to Trunk Fork Point only):
+            // Associated should only include: b1, a2, a1, and fork point c1 -> total 4
+            // Older trunk (root), ahead trunk (c2), and unrelated (x1) are hidden
+            vm.AssociationMode = BranchAssociationMode.HideBeyondTrunk;
+            Assert.Equal(4, vm.FilteredCommits.Count);
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "b1");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "a2");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "a1");
+            Assert.Contains(vm.FilteredCommits, c => c.Hash == "c1");
+            Assert.DoesNotContain(vm.FilteredCommits, c => c.Hash == "root");
+            Assert.DoesNotContain(vm.FilteredCommits, c => c.Hash == "c2");
+            Assert.DoesNotContain(vm.FilteredCommits, c => c.Hash == "x1");
+
+            // DimBeyondTrunk Mode:
+            // All 7 commits displayed, but root, c2, x1 are dimmed
+            vm.AssociationMode = BranchAssociationMode.DimBeyondTrunk;
+            Assert.Equal(7, vm.FilteredCommits.Count);
+            Assert.True(vm.FilteredCommits.First(c => c.Hash == "root").IsDimmed);
+            Assert.True(vm.FilteredCommits.First(c => c.Hash == "c2").IsDimmed);
+            Assert.True(vm.FilteredCommits.First(c => c.Hash == "x1").IsDimmed);
+            Assert.False(vm.FilteredCommits.First(c => c.Hash == "b1").IsDimmed);
+            Assert.False(vm.FilteredCommits.First(c => c.Hash == "c1").IsDimmed);
+
+            // HideUnrelated Mode (includes full trunk lineage):
             // Associated should include: root, c1, c2 (trunk), a1, a2 (A), b1 (B) -> total 6
             // Unrelated x1 should be hidden
             vm.AssociationMode = BranchAssociationMode.HideUnrelated;
