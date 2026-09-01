@@ -306,6 +306,53 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task CommitHistoryViewModel_BranchAssociation_SelectsCommitAndHighlightsMergeAndForkLineage()
+        {
+            // PR Merge Topology (matching Bitbucket/GitHub PR flow):
+            // Trunk: root -> c0 -> c1 -> mergePR ("78a1306") -> tip ("87c5e2a")
+            // Feature branch diverged at c0: c0 -> f_wip ("f65af44") -> f_unit ("ac25c3a") -> merged into trunk at mergePR ("78a1306")
+            // Unrelated branch: root -> x1
+            var root = new GitCommit { Hash = "root", Subject = "Root commit" };
+            var c0 = new GitCommit { Hash = "c0", ParentHashes = new List<string> { "root" }, Subject = "Trunk base where feature branched" };
+            var c1 = new GitCommit { Hash = "c1", ParentHashes = new List<string> { "c0" }, Subject = "Trunk parallel work" };
+            var f_wip = new GitCommit { Hash = "f65af44", ParentHashes = new List<string> { "c0" }, Subject = "Feature WIP" };
+            var f_unit = new GitCommit { Hash = "ac25c3a", ParentHashes = new List<string> { "f65af44" }, Subject = "Unit tests" };
+            var mergePR = new GitCommit { Hash = "78a1306", ParentHashes = new List<string> { "c1", "ac25c3a" }, Subject = "Merged in feature PR" };
+            var tip = new GitCommit { Hash = "87c5e2a", ParentHashes = new List<string> { "78a1306" }, Subject = "Develop tip" };
+            var x1 = new GitCommit { Hash = "x1", ParentHashes = new List<string> { "root" }, Subject = "Unrelated feature" };
+
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { tip, mergePR, f_unit, f_wip, c1, c0, x1, root },
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "develop", TipCommitHash = "87c5e2a" },
+                    new() { Name = "feature/PR", TipCommitHash = "f65af44" }
+                }
+            };
+
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            vm.SetBranches(fakeGit.Branches, "develop");
+            await vm.LoadCommitsAsync();
+
+            // Set mode to Dim to Trunk Fork
+            vm.AssociationMode = BranchAssociationMode.DimBeyondTrunk;
+
+            // User selects f65af44 in the commit history
+            vm.SelectedCommit = f_wip;
+
+            // Verified associated: f65af44, ac25c3a (child commit), 78a1306 (PR merge), 87c5e2a (descendant tip), c0 (fork point)
+            Assert.False(f_wip.IsDimmed);
+            Assert.False(f_unit.IsDimmed);
+            Assert.False(mergePR.IsDimmed);
+            Assert.False(c0.IsDimmed);
+
+            // Verified dimmed: older trunk (root), parallel trunk before merge (c1), unrelated branch (x1)
+            Assert.True(root.IsDimmed);
+            Assert.True(x1.IsDimmed);
+        }
+
+        [Fact]
         public async Task CommitHistoryViewModel_FiltersByIndividualColumns()
         {
             var fakeGit = new FakeGitService

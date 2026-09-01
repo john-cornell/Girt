@@ -61,6 +61,11 @@ namespace Girt.ViewModels
         partial void OnSelectedCommitChanged(GitCommit? value)
         {
             _onCommitSelected(value);
+
+            if (value != null && (AssociationMode == BranchAssociationMode.DimBeyondTrunk || AssociationMode == BranchAssociationMode.DimUnrelated))
+            {
+                UpdateDimmedStatesOnly();
+            }
         }
 
         partial void OnFilterSubjectChanged(string value) => ScheduleApplyFilter();
@@ -170,6 +175,26 @@ namespace Girt.ViewModels
             ApplyFilteredCommitsList(matches);
         }
 
+        private void UpdateDimmedStatesOnly()
+        {
+            if (_allCommits.Count == 0) return;
+
+            var currentMode = AssociationMode;
+            if (currentMode == BranchAssociationMode.ShowAll) return;
+
+            var includeFullTrunk = currentMode == BranchAssociationMode.DimUnrelated;
+            var targetAnchor = SelectedCommit?.Hash ?? ActiveBranchName;
+
+            var associated = ComputeAssociatedCommitHashes(_allCommits, _allBranches, targetAnchor, includeFullTrunk, out _);
+
+            foreach (var c in FilteredCommits)
+            {
+                var isAssoc = associated.Contains(c.Hash);
+                c.IsAssociated = isAssoc;
+                c.IsDimmed = !isAssoc;
+            }
+        }
+
         private List<GitCommit> ComputeFilteredMatches()
         {
             if (_allCommits.Count == 0) return new List<GitCommit>();
@@ -179,7 +204,7 @@ namespace Girt.ViewModels
             var dateQuery = FilterDate?.Trim() ?? string.Empty;
             var shaQuery = FilterSha?.Trim() ?? string.Empty;
             var currentMode = AssociationMode;
-            var currentBranch = ActiveBranchName;
+            var targetAnchor = SelectedCommit?.Hash ?? ActiveBranchName;
 
             var isHideMode = currentMode == BranchAssociationMode.HideUnrelated || currentMode == BranchAssociationMode.HideBeyondTrunk;
             var isDimMode = currentMode == BranchAssociationMode.DimUnrelated || currentMode == BranchAssociationMode.DimBeyondTrunk;
@@ -187,7 +212,7 @@ namespace Girt.ViewModels
 
             var associatedHashes = currentMode == BranchAssociationMode.ShowAll
                 ? null
-                : ComputeAssociatedCommitHashes(_allCommits, _allBranches, currentBranch, includeFullTrunk, out _);
+                : ComputeAssociatedCommitHashes(_allCommits, _allBranches, targetAnchor, includeFullTrunk, out _);
 
             var matches = new List<GitCommit>();
 
@@ -251,10 +276,10 @@ namespace Girt.ViewModels
             }
         }
 
-        private HashSet<string> ComputeAssociatedCommitHashes(
+        public HashSet<string> ComputeAssociatedCommitHashes(
             IReadOnlyList<GitCommit> allCommits,
             IReadOnlyList<GitBranch> branches,
-            string activeBranchName,
+            string? targetAnchor,
             bool includeFullTrunk,
             out string detectedTrunk)
         {
@@ -290,121 +315,147 @@ namespace Girt.ViewModels
                 }
             }
 
-            // 2. Identify Active / Selected Branch Tip Commit Hash
-            string? activeHash = null;
-            if (!string.IsNullOrEmpty(activeBranchName))
+            // 2. Resolve Target Commit Hash
+            string? targetHash = null;
+            if (!string.IsNullOrEmpty(targetAnchor))
             {
-                var activeBranch = branches.FirstOrDefault(b => b.Name.Equals(activeBranchName, StringComparison.OrdinalIgnoreCase) ||
-                                                               b.DisplayName.Equals(activeBranchName, StringComparison.OrdinalIgnoreCase));
-                if (activeBranch != null)
+                if (commitLookup.ContainsKey(targetAnchor))
                 {
-                    activeHash = activeBranch.TipCommitHash;
-                }
-            }
-
-            if (string.IsNullOrEmpty(activeHash))
-            {
-                activeHash = SelectedCommit?.Hash ?? trunkHash;
-            }
-
-            var associated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            // 3. Trunk Ancestors
-            var trunkAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrEmpty(trunkHash))
-            {
-                TraverseAncestors(trunkHash, commitLookup, trunkAncestors);
-            }
-
-            // 4. Active Branch Ancestors
-            var activeAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrEmpty(activeHash))
-            {
-                TraverseAncestors(activeHash, commitLookup, activeAncestors);
-            }
-
-            if (includeFullTrunk)
-            {
-                foreach (var h in trunkAncestors) associated.Add(h);
-                foreach (var h in activeAncestors) associated.Add(h);
-
-                var branchSpecificAncestors = activeAncestors.Except(trunkAncestors).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if (branchSpecificAncestors.Count > 0 || !string.IsNullOrEmpty(activeHash))
-                {
-                    foreach (var commit in allCommits)
-                    {
-                        if (associated.Contains(commit.Hash)) continue;
-
-                        var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        TraverseAncestors(commit.Hash, commitLookup, ancestors);
-                        if ((!string.IsNullOrEmpty(activeHash) && ancestors.Contains(activeHash)) ||
-                            ancestors.Overlaps(branchSpecificAncestors))
-                        {
-                            associated.Add(commit.Hash);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // Branch to Trunk Fork Point Only:
-                string? forkPointHash = null;
-                if (!string.IsNullOrEmpty(activeHash) && !string.IsNullOrEmpty(trunkHash))
-                {
-                    var queue = new Queue<string>();
-                    var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    queue.Enqueue(activeHash);
-
-                    while (queue.Count > 0)
-                    {
-                        var hash = queue.Dequeue();
-                        if (!visited.Add(hash)) continue;
-
-                        if (trunkAncestors.Contains(hash))
-                        {
-                            forkPointHash = hash;
-                            break; // Found the trunk fork point
-                        }
-
-                        if (commitLookup.TryGetValue(hash, out var commit) && commit.ParentHashes != null)
-                        {
-                            foreach (var p in commit.ParentHashes)
-                            {
-                                if (!visited.Contains(p)) queue.Enqueue(p);
-                            }
-                        }
-                    }
-                }
-
-                if (activeHash == trunkHash || string.IsNullOrEmpty(forkPointHash))
-                {
-                    // Active branch is trunk itself or fork point not found
-                    foreach (var h in activeAncestors) associated.Add(h);
+                    targetHash = targetAnchor;
                 }
                 else
                 {
-                    // Only active branch commits down to the fork point on trunk (inclusive)
-                    var branchSpecificAncestors = activeAncestors.Except(trunkAncestors).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    foreach (var h in branchSpecificAncestors) associated.Add(h);
-                    associated.Add(forkPointHash); // Include the fork point commit
-
-                    // Plus any child branches that stem from this branch
-                    foreach (var commit in allCommits)
+                    var branchMatch = branches.FirstOrDefault(b => b.Name.Equals(targetAnchor, StringComparison.OrdinalIgnoreCase) ||
+                                                                   b.DisplayName.Equals(targetAnchor, StringComparison.OrdinalIgnoreCase));
+                    if (branchMatch != null)
                     {
-                        if (associated.Contains(commit.Hash)) continue;
+                        targetHash = branchMatch.TipCommitHash;
+                    }
+                }
+            }
 
-                        var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        TraverseAncestors(commit.Hash, commitLookup, ancestors);
-                        if ((!string.IsNullOrEmpty(activeHash) && ancestors.Contains(activeHash)) ||
-                            ancestors.Overlaps(branchSpecificAncestors))
+            if (string.IsNullOrEmpty(targetHash))
+            {
+                targetHash = SelectedCommit?.Hash ?? trunkHash;
+            }
+
+            var associated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(targetHash)) return associated;
+
+            // 3. Trunk First-Parent Backbone & Full Trunk Ancestors
+            var trunkMainLine = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var trunkAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(trunkHash))
+            {
+                trunkMainLine = TraverseFirstParents(trunkHash, commitLookup);
+                TraverseAncestors(trunkHash, commitLookup, trunkAncestors);
+            }
+
+            // 4. Target Commit Ancestors
+            var targetAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            TraverseAncestors(targetHash, commitLookup, targetAncestors);
+
+            // 5. Find Fork Point on Trunk Backbone
+            string? forkPointHash = null;
+            if (trunkMainLine.Contains(targetHash))
+            {
+                // Target is directly on trunk backbone
+                forkPointHash = targetHash;
+            }
+            else
+            {
+                var queue = new Queue<string>();
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                queue.Enqueue(targetHash);
+
+                while (queue.Count > 0)
+                {
+                    var hash = queue.Dequeue();
+                    if (!visited.Add(hash)) continue;
+
+                    if (trunkMainLine.Contains(hash))
+                    {
+                        forkPointHash = hash;
+                        break; // Found fork point on trunk backbone
+                    }
+
+                    if (commitLookup.TryGetValue(hash, out var commit) && commit.ParentHashes != null)
+                    {
+                        foreach (var p in commit.ParentHashes)
                         {
-                            associated.Add(commit.Hash);
+                            if (!visited.Contains(p)) queue.Enqueue(p);
                         }
                     }
+                }
+            }
+
+            // Branch segment = all ancestors of target that are not on trunkMainLine, plus target, plus fork point
+            var branchSpecific = targetAncestors.Except(trunkMainLine).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            branchSpecific.Add(targetHash);
+
+            foreach (var h in branchSpecific)
+            {
+                associated.Add(h);
+            }
+
+            if (!string.IsNullOrEmpty(forkPointHash))
+            {
+                associated.Add(forkPointHash);
+            }
+
+            // 6. Find all descendants of the branch segment (e.g. PR merge commits like '78a1306', child commits)
+            var nonForkBranchCommits = branchSpecific.Except(new[] { forkPointHash ?? "" }).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var ancestorCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var commit in allCommits)
+            {
+                if (associated.Contains(commit.Hash)) continue;
+
+                if (!ancestorCache.TryGetValue(commit.Hash, out var ancestors))
+                {
+                    ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    TraverseAncestors(commit.Hash, commitLookup, ancestors);
+                    ancestorCache[commit.Hash] = ancestors;
+                }
+
+                // If commit descends from target commit or any side branch commit
+                if (ancestors.Contains(targetHash) || ancestors.Overlaps(nonForkBranchCommits))
+                {
+                    associated.Add(commit.Hash);
+                }
+            }
+
+            // If includeFullTrunk mode is enabled, also add the rest of trunk history
+            if (includeFullTrunk)
+            {
+                foreach (var h in trunkAncestors)
+                {
+                    associated.Add(h);
                 }
             }
 
             return associated;
+        }
+
+        private static HashSet<string> TraverseFirstParents(string startHash, Dictionary<string, GitCommit> lookup)
+        {
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(startHash)) return visited;
+
+            var current = startHash;
+            while (!string.IsNullOrEmpty(current) && visited.Add(current))
+            {
+                if (lookup.TryGetValue(current, out var commit) && commit.ParentHashes != null && commit.ParentHashes.Count > 0)
+                {
+                    current = commit.ParentHashes[0]; // First parent is the main trunk line
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            return visited;
         }
 
         private static void TraverseAncestors(string startHash, Dictionary<string, GitCommit> lookup, HashSet<string> visited)
