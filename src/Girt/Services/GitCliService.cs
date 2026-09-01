@@ -374,6 +374,37 @@ namespace Girt.Services
             return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         }
 
+        public async Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"revert --no-edit \"{commitHash}\"");
+            var combined = (output + "\n" + error).Trim();
+            return (success, combined);
+        }
+
+        public async Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"cherry-pick \"{commitHash}\"");
+            var combined = (output + "\n" + error).Trim();
+            return (success, combined);
+        }
+
+        public async Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false)
+        {
+            var flags = "";
+            if (squash) flags += " --squash";
+            if (noFf) flags += " --no-ff";
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"merge{flags} \"{targetRef}\"");
+            var combined = (output + "\n" + error).Trim();
+            return (success, combined);
+        }
+
+        public async Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"rebase \"{targetRef}\"");
+            var combined = (output + "\n" + error).Trim();
+            return (success, combined);
+        }
+
         public async Task<(bool Success, string Output)> ResetHeadAsync(string repoPath, string targetRef, GitResetMode mode)
         {
             var flag = mode switch

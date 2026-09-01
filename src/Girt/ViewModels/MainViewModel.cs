@@ -312,6 +312,259 @@ namespace Girt.ViewModels
             _themeService.ToggleTheme();
         }
 
+        // ================= CLIPBOARD COPY COMMANDS =================
+        [RelayCommand]
+        public void CopyCommitSha(object? parameter)
+        {
+            var hash = (parameter as GitCommit)?.Hash ?? CommitHistory.SelectedCommit?.Hash;
+            if (!string.IsNullOrEmpty(hash))
+            {
+                Clipboard.SetText(hash);
+                StatusMessage = $"Copied SHA {hash[..Math.Min(7, hash.Length)]} to clipboard.";
+            }
+        }
+
+        [RelayCommand]
+        public void CopyCommitShortSha(object? parameter)
+        {
+            var shortHash = (parameter as GitCommit)?.ShortHash ?? CommitHistory.SelectedCommit?.ShortHash;
+            if (!string.IsNullOrEmpty(shortHash))
+            {
+                Clipboard.SetText(shortHash);
+                StatusMessage = $"Copied SHA {shortHash} to clipboard.";
+            }
+        }
+
+        [RelayCommand]
+        public void CopyCommitMessage(object? parameter)
+        {
+            var msg = (parameter as GitCommit)?.Subject ?? CommitHistory.SelectedCommit?.Subject;
+            if (!string.IsNullOrEmpty(msg))
+            {
+                Clipboard.SetText(msg);
+                StatusMessage = "Copied commit message to clipboard.";
+            }
+        }
+
+        [RelayCommand]
+        public void CopyCommitAuthor(object? parameter)
+        {
+            var commit = (parameter as GitCommit) ?? CommitHistory.SelectedCommit;
+            if (commit != null)
+            {
+                var text = string.IsNullOrEmpty(commit.AuthorEmail)
+                    ? commit.AuthorName
+                    : $"{commit.AuthorName} <{commit.AuthorEmail}>";
+                Clipboard.SetText(text);
+                StatusMessage = $"Copied author '{text}' to clipboard.";
+            }
+        }
+
+        [RelayCommand]
+        public void CopyBranchName(object? parameter)
+        {
+            var name = (parameter as GitBranch)?.Name ?? (parameter as string) ?? CurrentBranch;
+            if (!string.IsNullOrEmpty(name))
+            {
+                Clipboard.SetText(name);
+                StatusMessage = $"Copied branch name '{name}' to clipboard.";
+            }
+        }
+
+        // ================= REVERT & CHERRY-PICK =================
+        [RelayCommand]
+        public async Task RevertCommitAsync(object? parameter)
+        {
+            var commit = (parameter as GitCommit) ?? CommitHistory.SelectedCommit;
+            if (commit == null || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var result = MessageBox.Show(
+                $"Are you sure you want to revert commit {commit.ShortHash}?\n\nSubject: {commit.Subject}\nAuthor: {commit.AuthorName}\n\nThis will create a new revert commit on branch '{CurrentBranch}'.",
+                "Revert Commit",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            IsLoading = true;
+            StatusMessage = $"Reverting commit {commit.ShortHash}...";
+
+            try
+            {
+                var (success, output) = await _gitService.RevertCommitAsync(RepositoryPath, commit.Hash);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = $"Reverted commit {commit.ShortHash} successfully.";
+                }
+                else
+                {
+                    MessageBox.Show($"Failed to revert commit:\n{output}", "Revert Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
+        public async Task CherryPickCommitAsync(object? parameter)
+        {
+            var commit = (parameter as GitCommit) ?? CommitHistory.SelectedCommit;
+            if (commit == null || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var result = MessageBox.Show(
+                $"Are you sure you want to cherry-pick commit {commit.ShortHash} onto current branch '{CurrentBranch}'?\n\nSubject: {commit.Subject}\nAuthor: {commit.AuthorName}",
+                "Cherry-Pick Commit",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            IsLoading = true;
+            StatusMessage = $"Cherry-picking commit {commit.ShortHash}...";
+
+            try
+            {
+                var (success, output) = await _gitService.CherryPickCommitAsync(RepositoryPath, commit.Hash);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = $"Cherry-picked commit {commit.ShortHash} successfully.";
+                }
+                else
+                {
+                    MessageBox.Show($"Failed to cherry-pick commit:\n{output}", "Cherry-Pick Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        // ================= MERGE & REBASE =================
+        [RelayCommand]
+        public async Task MergeIntoCurrentBranchAsync(object? parameter)
+        {
+            await ExecuteMergeAsync(parameter, squash: false, noFf: false);
+        }
+
+        [RelayCommand]
+        public async Task MergeSquashIntoCurrentBranchAsync(object? parameter)
+        {
+            await ExecuteMergeAsync(parameter, squash: true, noFf: false);
+        }
+
+        [RelayCommand]
+        public async Task MergeNoFfIntoCurrentBranchAsync(object? parameter)
+        {
+            await ExecuteMergeAsync(parameter, squash: false, noFf: true);
+        }
+
+        private async Task ExecuteMergeAsync(object? parameter, bool squash, bool noFf)
+        {
+            var targetRef = parameter switch
+            {
+                GitCommit c => c.Hash,
+                GitBranch b => b.Name,
+                string s => s,
+                _ => CommitHistory.SelectedCommit?.Hash
+            };
+
+            if (string.IsNullOrEmpty(targetRef) || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var targetDisplay = parameter switch
+            {
+                GitCommit c => $"commit {c.ShortHash} ({c.Subject})",
+                GitBranch b => $"branch '{b.DisplayName}'",
+                _ => targetRef
+            };
+
+            var modeLabel = squash ? " (Squash)" : noFf ? " (No Fast-Forward)" : "";
+            var result = MessageBox.Show(
+                $"Merge {targetDisplay} into current branch '{CurrentBranch}'{modeLabel}?",
+                "Confirm Merge",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            IsLoading = true;
+            StatusMessage = $"Merging {targetRef} into {CurrentBranch}...";
+
+            try
+            {
+                var (success, output) = await _gitService.MergeAsync(RepositoryPath, targetRef, squash, noFf);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = $"Merged successfully.";
+                }
+                else
+                {
+                    MessageBox.Show($"Merge encountered conflicts or failed:\n{output}", "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    await RefreshRepositoryAsync();
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        [RelayCommand]
+        public async Task RebaseCurrentBranchOnAsync(object? parameter)
+        {
+            var targetRef = parameter switch
+            {
+                GitCommit c => c.Hash,
+                GitBranch b => b.Name,
+                string s => s,
+                _ => CommitHistory.SelectedCommit?.Hash
+            };
+
+            if (string.IsNullOrEmpty(targetRef) || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var targetDisplay = parameter switch
+            {
+                GitCommit c => $"commit {c.ShortHash} ({c.Subject})",
+                GitBranch b => $"branch '{b.DisplayName}'",
+                _ => targetRef
+            };
+
+            var result = MessageBox.Show(
+                $"Rebase current branch '{CurrentBranch}' on {targetDisplay}?\n\nWarning: This will replay local commits on top of {targetRef}.",
+                "Confirm Rebase",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            IsLoading = true;
+            StatusMessage = $"Rebasing {CurrentBranch} on {targetRef}...";
+
+            try
+            {
+                var (success, output) = await _gitService.RebaseAsync(RepositoryPath, targetRef);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = $"Rebased successfully.";
+                }
+                else
+                {
+                    MessageBox.Show($"Rebase encountered conflicts or failed:\n{output}", "Rebase Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    await RefreshRepositoryAsync();
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
         // Branch Creation Modal
         [RelayCommand]
         public void ShowCreateBranchDialog()
@@ -362,6 +615,11 @@ namespace Girt.ViewModels
             {
                 ResetTargetRef = commit.Hash;
                 ResetTargetDescription = $"Commit {commit.ShortHash}: {commit.Subject}";
+            }
+            else if (parameter is GitBranch branch)
+            {
+                ResetTargetRef = branch.Name;
+                ResetTargetDescription = $"Branch {branch.DisplayName}";
             }
             else
             {

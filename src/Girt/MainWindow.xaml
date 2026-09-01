@@ -437,7 +437,30 @@
                                             <MenuItem Header="Checkout Branch"
                                                       Command="{Binding BranchList.CheckoutBranchCommand}"
                                                       CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <MenuItem Header="Delete Branch"
+                                            <Separator />
+                                            <MenuItem Header="🔀 Merge into current branch...">
+                                                <MenuItem Header="Merge (Default)"
+                                                          Command="{Binding MergeIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                                <MenuItem Header="Squash and Merge..."
+                                                          Command="{Binding MergeSquashIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                                <MenuItem Header="Merge (--no-ff)..."
+                                                          Command="{Binding MergeNoFfIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            </MenuItem>
+                                            <MenuItem Header="⎇ Rebase current branch on this branch..."
+                                                      Command="{Binding RebaseCurrentBranchOnCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <MenuItem Header="↺ Reset current branch to this branch..."
+                                                      Command="{Binding ShowResetDialogCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
+                                            <MenuItem Header="📋 Copy Branch Name"
+                                                      Command="{Binding CopyBranchNameCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
+                                            <MenuItem Header="Delete Branch..."
                                                       Command="{Binding BranchList.DeleteBranchCommand}"
                                                       CommandParameter="{Binding BranchList.SelectedBranch}" />
                                         </ContextMenu>
@@ -480,6 +503,35 @@
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
+                                    <ListBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Checkout as Local Branch..."
+                                                      Command="{Binding BranchList.CheckoutBranchCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
+                                            <MenuItem Header="🔀 Merge into current branch...">
+                                                <MenuItem Header="Merge (Default)"
+                                                          Command="{Binding MergeIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                                <MenuItem Header="Squash and Merge..."
+                                                          Command="{Binding MergeSquashIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                                <MenuItem Header="Merge (--no-ff)..."
+                                                          Command="{Binding MergeNoFfIntoCurrentBranchCommand}"
+                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            </MenuItem>
+                                            <MenuItem Header="⎇ Rebase current branch on this branch..."
+                                                      Command="{Binding RebaseCurrentBranchOnCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <MenuItem Header="↺ Reset current branch to this branch..."
+                                                      Command="{Binding ShowResetDialogCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
+                                            <MenuItem Header="📋 Copy Branch Name"
+                                                      Command="{Binding CopyBranchNameCommand}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                        </ContextMenu>
+                                    </ListBox.ContextMenu>
                                 </ListBox>
                             </Expander>
                         </StackPanel>
@@ -622,10 +674,54 @@
                         </ListView.ItemContainerStyle>
                         <ListView.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="Reset Branch to this Commit (Soft - keep changes staged)..."
-                                          Command="{Binding ShowResetDialogCommand}"
+                                <!-- Copy Submenu -->
+                                <MenuItem Header="📋 Copy">
+                                    <MenuItem Header="Commit SHA (Full)"
+                                              Command="{Binding CopyCommitShaCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                    <MenuItem Header="Commit SHA (Short)"
+                                              Command="{Binding CopyCommitShortShaCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                    <MenuItem Header="Commit Message"
+                                              Command="{Binding CopyCommitMessageCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                    <MenuItem Header="Author Details"
+                                              Command="{Binding CopyCommitAuthorCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                </MenuItem>
+                                <Separator />
+
+                                <!-- Revert Commit -->
+                                <MenuItem Header="↩ Revert this commit..."
+                                          Command="{Binding RevertCommitCommand}"
                                           CommandParameter="{Binding CommitHistory.SelectedCommit}" />
-                                <MenuItem Header="Reset Branch to this Commit (Hard - discard changes)..."
+
+                                <!-- Cherry Pick Commit -->
+                                <MenuItem Header="🍒 Cherry-pick this commit..."
+                                          Command="{Binding CherryPickCommitCommand}"
+                                          CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                <Separator />
+
+                                <!-- Merge into current branch -->
+                                <MenuItem Header="🔀 Merge into current branch...">
+                                    <MenuItem Header="Merge (Default)"
+                                              Command="{Binding MergeIntoCurrentBranchCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                    <MenuItem Header="Squash and Merge..."
+                                              Command="{Binding MergeSquashIntoCurrentBranchCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                    <MenuItem Header="Merge (--no-ff)..."
+                                              Command="{Binding MergeNoFfIntoCurrentBranchCommand}"
+                                              CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                </MenuItem>
+
+                                <!-- Rebase current branch on this commit -->
+                                <MenuItem Header="⎇ Rebase current branch on this commit..."
+                                          Command="{Binding RebaseCurrentBranchOnCommand}"
+                                          CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+
+                                <!-- Reset current branch to here -->
+                                <MenuItem Header="↺ Reset current branch to here..."
                                           Command="{Binding ShowResetDialogCommand}"
                                           CommandParameter="{Binding CommitHistory.SelectedCommit}" />
                             </ContextMenu>

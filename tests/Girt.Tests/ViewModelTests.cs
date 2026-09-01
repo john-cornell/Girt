@@ -137,6 +137,35 @@ namespace Girt.Tests
         {
             return Task.FromResult((true, "Applied top stash"));
         }
+
+        public string? LastRevertedCommit { get; set; }
+        public string? LastCherryPickedCommit { get; set; }
+        public string? LastMergedRef { get; set; }
+        public string? LastRebasedRef { get; set; }
+
+        public Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash)
+        {
+            LastRevertedCommit = commitHash;
+            return Task.FromResult((true, "Reverted commit"));
+        }
+
+        public Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash)
+        {
+            LastCherryPickedCommit = commitHash;
+            return Task.FromResult((true, "Cherry-picked commit"));
+        }
+
+        public Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false)
+        {
+            LastMergedRef = targetRef;
+            return Task.FromResult((true, "Merged ref"));
+        }
+
+        public Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef)
+        {
+            LastRebasedRef = targetRef;
+            return Task.FromResult((true, "Rebased ref"));
+        }
     }
 
     public class ViewModelTests
@@ -423,6 +452,31 @@ namespace Girt.Tests
             Assert.Contains(MainViewModel.AppVersion, mainVm.WindowTitle);
             Assert.Contains("MyProject", mainVm.WindowTitle);
             Assert.Contains("feature/test", mainVm.WindowTitle);
+        }
+
+        [Fact]
+        public void MainViewModel_ResetDialog_PreFillsTargetCorrectly()
+        {
+            var fakeGit = new FakeGitService();
+            var recentService = new RecentRepositoriesService();
+            var themeService = new ThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService);
+
+            // Default
+            mainVm.ShowResetDialog();
+            Assert.True(mainVm.IsResetDialogOpen);
+            Assert.Equal("HEAD~1", mainVm.ResetTargetRef);
+
+            // Commit param
+            var commit = new GitCommit { Hash = "abc1234567890", Subject = "Fix bug" };
+            mainVm.ShowResetDialog(commit);
+            Assert.Equal("abc1234567890", mainVm.ResetTargetRef);
+            Assert.Contains("abc1234", mainVm.ResetTargetDescription);
+
+            // Branch param
+            var branch = new GitBranch { Name = "feature/login", TipCommitHash = "def456" };
+            mainVm.ShowResetDialog(branch);
+            Assert.Equal("feature/login", mainVm.ResetTargetRef);
         }
     }
 }

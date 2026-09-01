@@ -36,5 +36,9 @@ namespace Girt.Services
         Task<(bool Success, string Output)> StashPopAsync(string repoPath);
         Task<(bool Success, string Output)> StashApplyAsync(string repoPath);
         Task<int> GetStashCountAsync(string repoPath);
+        Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash);
+        Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash);
+        Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false);
+        Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef);
     }
 }
