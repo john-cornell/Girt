@@ -108,6 +108,17 @@ namespace Girt.ViewModels
             if (!string.IsNullOrEmpty(currentBranch))
             {
                 ActiveBranchName = currentBranch;
+
+                var branchMatch = _allBranches.FirstOrDefault(b => b.Name.Equals(currentBranch, StringComparison.OrdinalIgnoreCase) ||
+                                                               b.DisplayName.Equals(currentBranch, StringComparison.OrdinalIgnoreCase));
+                if (branchMatch != null && !string.IsNullOrEmpty(branchMatch.TipCommitHash))
+                {
+                    var commit = _allCommits.FirstOrDefault(c => c.Hash.Equals(branchMatch.TipCommitHash, StringComparison.OrdinalIgnoreCase));
+                    if (commit != null)
+                    {
+                        SelectedCommit = commit;
+                    }
+                }
             }
             ApplyFilterCore();
         }
