@@ -1,6 +1,8 @@
 using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -23,7 +25,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.2.0";
+        public const string AppVersion = "0.4.1";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -96,10 +98,20 @@ namespace Girt.ViewModels
             _recentReposService = recentReposService;
             _themeService = themeService;
 
-            BranchList = new BranchListViewModel(_gitService, () => RepositoryPath, OnBranchChangedAsync);
+            BranchList = new BranchListViewModel(
+                _gitService,
+                () => RepositoryPath,
+                OnBranchChangedAsync,
+                _themeService.LoadGroupBranchesIntoFolders(),
+                _themeService.SaveGroupBranchesIntoFolders);
             CommitHistory = new CommitHistoryViewModel(_gitService, () => RepositoryPath, OnCommitSelected);
             CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath);
-            WorkingChanges = new WorkingChangesViewModel(_gitService, () => RepositoryPath, OnWorkingChangesUpdatedAsync);
+            WorkingChanges = new WorkingChangesViewModel(
+                _gitService,
+                () => RepositoryPath,
+                OnWorkingChangesUpdatedAsync,
+                _themeService.LoadPushAfterCommit(),
+                _themeService.SavePushAfterCommit);
 
             // Hook branch selection change to update association view immediately
             BranchList.PropertyChanged += (s, e) =>
@@ -313,14 +325,39 @@ namespace Girt.ViewModels
         }
 
         // ================= CLIPBOARD COPY COMMANDS =================
+
+        // The Windows clipboard is a single shared, cross-process resource: any other app
+        // (clipboard managers, RDP, antivirus scanners) can hold it open for a few
+        // milliseconds, which makes OpenClipboard - and so Clipboard.SetText - fail
+        // transiently with CLIPBRD_E_CANT_OPEN (0x800401D0). Retry briefly before giving up.
+        private static bool TrySetClipboardText(string text)
+        {
+            const int maxAttempts = 10;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    Clipboard.SetText(text);
+                    return true;
+                }
+                catch (COMException) when (attempt < maxAttempts)
+                {
+                    Thread.Sleep(50);
+                }
+            }
+
+            return false;
+        }
+
         [RelayCommand]
         public void CopyCommitSha(object? parameter)
         {
             var hash = (parameter as GitCommit)?.Hash ?? CommitHistory.SelectedCommit?.Hash;
             if (!string.IsNullOrEmpty(hash))
             {
-                Clipboard.SetText(hash);
-                StatusMessage = $"Copied SHA {hash[..Math.Min(7, hash.Length)]} to clipboard.";
+                StatusMessage = TrySetClipboardText(hash)
+                    ? $"Copied SHA {hash[..Math.Min(7, hash.Length)]} to clipboard."
+                    : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
         }
 
@@ -330,8 +367,9 @@ namespace Girt.ViewModels
             var shortHash = (parameter as GitCommit)?.ShortHash ?? CommitHistory.SelectedCommit?.ShortHash;
             if (!string.IsNullOrEmpty(shortHash))
             {
-                Clipboard.SetText(shortHash);
-                StatusMessage = $"Copied SHA {shortHash} to clipboard.";
+                StatusMessage = TrySetClipboardText(shortHash)
+                    ? $"Copied SHA {shortHash} to clipboard."
+                    : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
         }
 
@@ -341,8 +379,9 @@ namespace Girt.ViewModels
             var msg = (parameter as GitCommit)?.Subject ?? CommitHistory.SelectedCommit?.Subject;
             if (!string.IsNullOrEmpty(msg))
             {
-                Clipboard.SetText(msg);
-                StatusMessage = "Copied commit message to clipboard.";
+                StatusMessage = TrySetClipboardText(msg)
+                    ? "Copied commit message to clipboard."
+                    : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
         }
 
@@ -355,8 +394,9 @@ namespace Girt.ViewModels
                 var text = string.IsNullOrEmpty(commit.AuthorEmail)
                     ? commit.AuthorName
                     : $"{commit.AuthorName} <{commit.AuthorEmail}>";
-                Clipboard.SetText(text);
-                StatusMessage = $"Copied author '{text}' to clipboard.";
+                StatusMessage = TrySetClipboardText(text)
+                    ? $"Copied author '{text}' to clipboard."
+                    : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
         }
 
@@ -366,8 +406,9 @@ namespace Girt.ViewModels
             var name = (parameter as GitBranch)?.Name ?? (parameter as string) ?? CurrentBranch;
             if (!string.IsNullOrEmpty(name))
             {
-                Clipboard.SetText(name);
-                StatusMessage = $"Copied branch name '{name}' to clipboard.";
+                StatusMessage = TrySetClipboardText(name)
+                    ? $"Copied branch name '{name}' to clipboard."
+                    : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
         }
 
@@ -687,6 +728,10 @@ namespace Girt.ViewModels
             if (isNewCommit)
             {
                 await RefreshRepositoryAsync();
+                if (WorkingChanges.PushAfterCommit)
+                {
+                    await PushAsync();
+                }
             }
         }
 

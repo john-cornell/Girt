@@ -14,6 +14,7 @@ namespace Girt.ViewModels
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
         private readonly Func<bool, Task> _onRepositoryUpdated;
+        private readonly Action<bool> _savePushAfterCommit;
 
         [ObservableProperty]
         private GitWorkingFile? _selectedFile;
@@ -48,6 +49,9 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private bool _isLoading;
 
+        [ObservableProperty]
+        private bool _pushAfterCommit;
+
         public ObservableCollection<GitWorkingFile> StagedFiles { get; } = new();
         public ObservableCollection<GitWorkingFile> UnstagedFiles { get; } = new();
         public ObservableCollection<DiffLine> DiffLines { get; } = new();
@@ -56,11 +60,23 @@ namespace Girt.ViewModels
         public bool HasStagedFiles => StagedFiles.Count > 0;
         public bool HasUnstagedFiles => UnstagedFiles.Count > 0;
 
-        public WorkingChangesViewModel(IGitService gitService, Func<string> getRepoPath, Func<bool, Task> onRepositoryUpdated)
+        public WorkingChangesViewModel(
+            IGitService gitService,
+            Func<string> getRepoPath,
+            Func<bool, Task> onRepositoryUpdated,
+            bool initialPushAfterCommit,
+            Action<bool> savePushAfterCommit)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
             _onRepositoryUpdated = onRepositoryUpdated;
+            _savePushAfterCommit = savePushAfterCommit;
+            _pushAfterCommit = initialPushAfterCommit;
+        }
+
+        partial void OnPushAfterCommitChanged(bool value)
+        {
+            _savePushAfterCommit(value);
         }
 
         public async Task LoadChangesAsync()
@@ -133,6 +149,18 @@ namespace Girt.ViewModels
             {
                 DiffLines.Add(l);
             }
+        }
+
+        [RelayCommand]
+        public void ToggleDiffSection(DiffLine? line)
+        {
+            DiffParser.ToggleCollapsedSection(DiffLines, line);
+        }
+
+        [RelayCommand]
+        public void ExpandAllDiffSections()
+        {
+            DiffParser.ExpandAllCollapsedSections(DiffLines);
         }
 
         [RelayCommand]

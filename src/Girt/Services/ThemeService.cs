@@ -17,6 +17,8 @@ namespace Girt.Services
     public class AppSettings
     {
         public AppTheme Theme { get; set; } = AppTheme.Dark;
+        public bool PushAfterCommit { get; set; } = false;
+        public bool GroupBranchesIntoFolders { get; set; } = false;
     }
 
     public class ThemeService
@@ -31,10 +33,10 @@ namespace Girt.Services
             Directory.CreateDirectory(girtDir);
             _settingsPath = Path.Combine(girtDir, "settings.json");
 
-            CurrentTheme = LoadSavedTheme();
+            CurrentTheme = LoadSettings().Theme;
         }
 
-        public AppTheme LoadSavedTheme()
+        private AppSettings LoadSettings()
         {
             try
             {
@@ -44,7 +46,7 @@ namespace Girt.Services
                     var settings = JsonSerializer.Deserialize<AppSettings>(json);
                     if (settings != null)
                     {
-                        return settings.Theme;
+                        return settings;
                     }
                 }
             }
@@ -53,14 +55,15 @@ namespace Girt.Services
                 // Fallback to default
             }
 
-            return AppTheme.Dark;
+            return new AppSettings();
         }
 
-        public void SaveTheme(AppTheme theme)
+        // Settings are stored together in one file, so saving one setting must preserve the
+        // others rather than overwrite the whole file with just the field being changed.
+        private void SaveSettings(AppSettings settings)
         {
             try
             {
-                var settings = new AppSettings { Theme = theme };
                 var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(_settingsPath, json);
             }
@@ -68,6 +71,33 @@ namespace Girt.Services
             {
                 // Ignore save errors
             }
+        }
+
+        public AppTheme LoadSavedTheme() => LoadSettings().Theme;
+
+        public void SaveTheme(AppTheme theme)
+        {
+            var settings = LoadSettings();
+            settings.Theme = theme;
+            SaveSettings(settings);
+        }
+
+        public bool LoadPushAfterCommit() => LoadSettings().PushAfterCommit;
+
+        public void SavePushAfterCommit(bool value)
+        {
+            var settings = LoadSettings();
+            settings.PushAfterCommit = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadGroupBranchesIntoFolders() => LoadSettings().GroupBranchesIntoFolders;
+
+        public void SaveGroupBranchesIntoFolders(bool value)
+        {
+            var settings = LoadSettings();
+            settings.GroupBranchesIntoFolders = value;
+            SaveSettings(settings);
         }
 
         public void ApplyTheme(AppTheme theme)

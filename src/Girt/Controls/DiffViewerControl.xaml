@@ -11,6 +11,8 @@
         <converters:DiffTypeToBackgroundConverter x:Key="DiffBgConverter" />
         <converters:DiffTypeToForegroundConverter x:Key="DiffFgConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisConverter" />
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisConverter" />
+        <converters:DiffLineToggleLabelConverter x:Key="DiffToggleLabelConverter" />
     </UserControl.Resources>
 
     <Grid Background="{DynamicResource CardBackgroundBrush}">
@@ -37,6 +39,16 @@
                         <Border Background="{Binding Type, Converter={StaticResource DiffBgConverter}}"
                                 Padding="4,1"
                                 SnapsToDevicePixels="True">
+                            <Border.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="{Binding Converter={StaticResource DiffToggleLabelConverter}}"
+                                              Command="{Binding DataContext.ToggleDiffSectionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                              CommandParameter="{Binding}"
+                                              Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
+                                    <MenuItem Header="Show Whole File"
+                                              Command="{Binding DataContext.ExpandAllDiffSectionsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                </ContextMenu>
+                            </Border.ContextMenu>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="40" />
@@ -67,7 +79,19 @@
                                            Text="{Binding Text}"
                                            Foreground="{Binding Type, Converter={StaticResource DiffFgConverter}}"
                                            FontFamily="Consolas, Cascadia Code, monospace"
-                                           FontSize="12" />
+                                           FontSize="12"
+                                           HorizontalAlignment="Left">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="CollapsedContext">
+                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                    <Setter Property="HorizontalAlignment" Value="Center" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                             </Grid>
                         </Border>
                     </DataTemplate>

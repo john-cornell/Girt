@@ -184,7 +184,7 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask);
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { });
             await vm.LoadBranchesAsync();
 
             Assert.Equal(3, vm.FilteredLocalBranches.Count);
@@ -194,6 +194,102 @@ namespace Girt.Tests
             Assert.Single(vm.FilteredLocalBranches);
             Assert.Equal("feature/login", vm.FilteredLocalBranches[0].Name);
             Assert.Empty(vm.FilteredRemoteBranches);
+        }
+
+        [Fact]
+        public async Task BranchListViewModel_GroupBranchesIntoFolders_BuildsIndentedFolderTree()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "feature/BB-100-foo" },
+                    new() { Name = "bugfix/BB-300-baz" },
+                    new() { Name = "feature/BB-200-bar" },
+                    new() { Name = "main" },
+                    new() { Name = "develop" }
+                }
+            };
+
+            var savedValues = new List<bool>();
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, v => savedValues.Add(v));
+            await vm.LoadBranchesAsync();
+
+            // Folders (in first-seen order) come first, each followed by its branches
+            // indented one level deeper; branches with no '/' are plain leaves at depth 0.
+            Assert.Equal(7, vm.LocalBranchTree.Count);
+
+            Assert.True(vm.LocalBranchTree[0].IsFolder);
+            Assert.Equal("feature", vm.LocalBranchTree[0].DisplayName);
+            Assert.Equal(0, vm.LocalBranchTree[0].Depth);
+
+            Assert.False(vm.LocalBranchTree[1].IsFolder);
+            Assert.Equal("BB-100-foo", vm.LocalBranchTree[1].DisplayName);
+            Assert.Equal(1, vm.LocalBranchTree[1].Depth);
+            Assert.Equal("feature/BB-100-foo", vm.LocalBranchTree[1].Branch?.Name);
+
+            Assert.False(vm.LocalBranchTree[2].IsFolder);
+            Assert.Equal("BB-200-bar", vm.LocalBranchTree[2].DisplayName);
+
+            Assert.True(vm.LocalBranchTree[3].IsFolder);
+            Assert.Equal("bugfix", vm.LocalBranchTree[3].DisplayName);
+
+            Assert.False(vm.LocalBranchTree[4].IsFolder);
+            Assert.Equal("BB-300-baz", vm.LocalBranchTree[4].DisplayName);
+
+            Assert.False(vm.LocalBranchTree[5].IsFolder);
+            Assert.Equal("main", vm.LocalBranchTree[5].DisplayName);
+            Assert.Equal(0, vm.LocalBranchTree[5].Depth);
+
+            Assert.False(vm.LocalBranchTree[6].IsFolder);
+            Assert.Equal("develop", vm.LocalBranchTree[6].DisplayName);
+
+            // Toggling back to flat mode persists the change and empties the tree.
+            vm.GroupBranchesIntoFolders = false;
+            Assert.Empty(vm.LocalBranchTree);
+            Assert.Equal(5, vm.FilteredLocalBranches.Count);
+            Assert.Contains(false, savedValues);
+        }
+
+        [Fact]
+        public async Task BranchListViewModel_ToggleBranchFolder_CollapsesAndExpandsJustThatFolder()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "feature/BB-100-foo" },
+                    new() { Name = "feature/BB-200-bar" },
+                    new() { Name = "bugfix/BB-300-baz" },
+                    new() { Name = "main" }
+                }
+            };
+
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, _ => { });
+            await vm.LoadBranchesAsync();
+
+            // Fully expanded: 2 folders + 4 leaves (2 under feature, 1 under bugfix, 1 root-level).
+            Assert.Equal(6, vm.LocalBranchTree.Count);
+            var featureFolder = vm.LocalBranchTree[0];
+            Assert.True(featureFolder.IsFolder);
+            Assert.Equal("feature", featureFolder.DisplayName);
+            Assert.False(featureFolder.IsCollapsed);
+
+            // Collapsing "feature" hides its 2 branches but leaves "bugfix" and "main" alone,
+            // and the folder row itself stays visible (just marked collapsed).
+            vm.ToggleLocalBranchFolder(featureFolder);
+            Assert.Equal(4, vm.LocalBranchTree.Count);
+            Assert.True(vm.LocalBranchTree[0].IsFolder);
+            Assert.Equal("feature", vm.LocalBranchTree[0].DisplayName);
+            Assert.True(vm.LocalBranchTree[0].IsCollapsed);
+            Assert.True(vm.LocalBranchTree[1].IsFolder);
+            Assert.Equal("bugfix", vm.LocalBranchTree[1].DisplayName);
+            Assert.False(vm.LocalBranchTree[1].IsCollapsed);
+
+            // Toggling the same folder path again re-expands it.
+            vm.ToggleLocalBranchFolder(vm.LocalBranchTree[0]);
+            Assert.Equal(6, vm.LocalBranchTree.Count);
+            Assert.False(vm.LocalBranchTree[0].IsCollapsed);
         }
 
         [Fact]
@@ -208,7 +304,7 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask);
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { });
             await vm.LoadBranchesAsync();
             Assert.Empty(vm.NewBranches);
             Assert.False(vm.HasNewBranches);
@@ -255,7 +351,8 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            var infoMessages = new List<(string Title, string Message)>();
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { }, (title, message) => infoMessages.Add((title, message)));
             vm.SetBranches(fakeGit.Branches, "feature/B");
             await vm.LoadCommitsAsync();
 
@@ -263,7 +360,8 @@ namespace Girt.Tests
             Assert.Equal(7, vm.FilteredCommits.Count);
 
             // DimToFork Command:
-            // All 7 commits displayed, but root, c2, x1 are dimmed
+            // All 7 commits displayed, but root, c2, x1 are dimmed - only the divergence
+            // point (c1) and this branch's own lineage (b1, a2, a1) stay lit.
             vm.DimToFork(b1);
             Assert.Equal(7, vm.FilteredCommits.Count);
             Assert.True(vm.FilteredCommits.First(c => c.Hash == "root").IsDimmed);
@@ -273,7 +371,7 @@ namespace Girt.Tests
             Assert.False(vm.FilteredCommits.First(c => c.Hash == "c1").IsDimmed);
 
             // HideToFork Command:
-            // Associated should only include: b1, a2, a1, and fork point c1 -> total 4
+            // Associated should only include: b1, a2, a1, and divergence point c1 -> total 4
             // Older trunk (root), ahead trunk (c2), and unrelated (x1) are hidden
             vm.HideToFork(b1);
             Assert.Equal(4, vm.FilteredCommits.Count);
@@ -289,6 +387,19 @@ namespace Girt.Tests
             vm.ClearIsolation();
             Assert.Equal(7, vm.FilteredCommits.Count);
             Assert.False(vm.FilteredCommits.First(c => c.Hash == "x1").IsDimmed);
+
+            // Isolating trunk itself is disallowed - it's a no-op, and the user is told why
+            // instead of it silently doing nothing.
+            vm.DimToFork(c2);
+            Assert.False(vm.IsBranchIsolated);
+            Assert.False(vm.FilteredCommits.First(c => c.Hash == "x1").IsDimmed);
+            Assert.Single(infoMessages);
+            Assert.Contains("main", infoMessages[0].Message);
+
+            vm.HideToFork(c2);
+            Assert.False(vm.IsBranchIsolated);
+            Assert.Equal(7, vm.FilteredCommits.Count);
+            Assert.Equal(2, infoMessages.Count);
         }
 
         [Fact]
@@ -342,6 +453,55 @@ namespace Girt.Tests
             Assert.True(root.IsDimmed);
             Assert.True(c1.IsDimmed);
             Assert.True(x1.IsDimmed);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_BranchAssociation_NestedBranch_ShowsAncestorBranchAndDivergence()
+        {
+            // Topology: trunk -> A -> B, B merged back into A (not into trunk).
+            // trunk (main): root -> t1 (tip)
+            // branch A diverges from trunk at root: root -> a1 -> a2 -> mergeB ("a3") -> a4 (tip: feature/A)
+            // branch B diverges from A at a1: a1 -> b1 -> b2, merged into A at mergeB ("a3")
+            // Isolating B should show: B's own commits, A's commits (its ancestor branch),
+            // and the single divergence point where A split from trunk (root).
+            var root = new GitCommit { Hash = "root", Subject = "Root" };
+            var t1 = new GitCommit { Hash = "t1", ParentHashes = new List<string> { "root" }, Subject = "Trunk tip" };
+            var a1 = new GitCommit { Hash = "a1", ParentHashes = new List<string> { "root" }, Subject = "A commit 1 (B diverges here)" };
+            var a2 = new GitCommit { Hash = "a2", ParentHashes = new List<string> { "a1" }, Subject = "A commit 2" };
+            var b1 = new GitCommit { Hash = "b1", ParentHashes = new List<string> { "a1" }, Subject = "B commit 1" };
+            var b2 = new GitCommit { Hash = "b2", ParentHashes = new List<string> { "b1" }, Subject = "B commit 2" };
+            var mergeB = new GitCommit { Hash = "a3", ParentHashes = new List<string> { "a2", "b2" }, Subject = "Merge B into A" };
+            var a4 = new GitCommit { Hash = "a4", ParentHashes = new List<string> { "a3" }, Subject = "A commit after merge" };
+
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { t1, a4, mergeB, b2, b1, a2, a1, root },
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "main", TipCommitHash = "t1" },
+                    new() { Name = "feature/A", TipCommitHash = "a4" },
+                    new() { Name = "feature/B", TipCommitHash = "b2" }
+                }
+            };
+
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            vm.SetBranches(fakeGit.Branches, "feature/B");
+            await vm.LoadCommitsAsync();
+
+            vm.DimToFork(b2);
+
+            // Not dimmed: B's own commits, A's commits (the ancestor branch B forked from),
+            // and the single divergence point where A split off trunk (root).
+            Assert.False(root.IsDimmed);
+            Assert.False(a1.IsDimmed);
+            Assert.False(a2.IsDimmed);
+            Assert.False(mergeB.IsDimmed);
+            Assert.False(a4.IsDimmed);
+            Assert.False(b1.IsDimmed);
+            Assert.False(b2.IsDimmed);
+
+            // Dimmed: trunk beyond the divergence point.
+            Assert.True(t1.IsDimmed);
         }
 
         [Fact]
@@ -415,7 +575,7 @@ namespace Girt.Tests
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = false });
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "readme.md", IsStaged = false });
 
-            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
             await vm.LoadChangesAsync();
 
             Assert.Equal(2, vm.UnstagedFiles.Count);
@@ -435,12 +595,30 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public void WorkingChangesViewModel_PushAfterCommit_LoadsInitialValueAndPersistsChanges()
+        {
+            var fakeGit = new FakeGitService();
+            var savedValues = new List<bool>();
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, true, v => savedValues.Add(v));
+
+            // Initial value comes from the injected loader, with no save triggered yet.
+            Assert.True(vm.PushAfterCommit);
+            Assert.Empty(savedValues);
+
+            // Toggling it persists the new value via the injected saver.
+            vm.PushAfterCommit = false;
+            Assert.Single(savedValues);
+            Assert.False(savedValues[0]);
+        }
+
+        [Fact]
         public async Task WorkingChangesViewModel_AddToGitIgnore_RemovesFileFromWorkingChanges()
         {
             var fakeGit = new FakeGitService();
             fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "debug.log", IsStaged = false });
 
-            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
             await vm.LoadChangesAsync();
 
             Assert.Single(vm.UnstagedFiles);
@@ -455,7 +633,7 @@ namespace Girt.Tests
             var fakeGit = new FakeGitService();
             fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "Feature.cs", IsStaged = true });
 
-            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask);
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
             await vm.LoadChangesAsync();
 
             Assert.True(vm.HasStagedFiles);

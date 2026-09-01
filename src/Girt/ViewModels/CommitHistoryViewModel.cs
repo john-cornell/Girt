@@ -17,6 +17,7 @@ namespace Girt.ViewModels
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
         private readonly Action<GitCommit?> _onCommitSelected;
+        private readonly Action<string, string> _showMessage;
 
         [ObservableProperty]
         private string _filterSubject = string.Empty;
@@ -60,11 +61,17 @@ namespace Girt.ViewModels
 
         public ObservableCollection<GitCommit> FilteredCommits { get; } = new();
 
-        public CommitHistoryViewModel(IGitService gitService, Func<string> getRepoPath, Action<GitCommit?> onCommitSelected)
+        public CommitHistoryViewModel(
+            IGitService gitService,
+            Func<string> getRepoPath,
+            Action<GitCommit?> onCommitSelected,
+            Action<string, string>? showMessage = null)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
             _onCommitSelected = onCommitSelected;
+            _showMessage = showMessage ?? ((title, message) =>
+                MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Information));
         }
 
         partial void OnSelectedCommitChanged(GitCommit? value)
@@ -84,18 +91,24 @@ namespace Girt.ViewModels
             if (string.IsNullOrEmpty(hash)) return;
 
             var desc = (parameter as GitCommit)?.Subject ?? (parameter as GitBranch)?.DisplayName ?? hash[..Math.Min(7, hash.Length)];
+
+            // Isolating trunk itself makes no sense - there's nothing to isolate it from.
+            var associated = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, hash);
+            if (associated.Count == 0)
+            {
+                ShowNothingToIsolateMessage(desc);
+                return;
+            }
+
             IsolatedTargetHash = hash;
             IsolatedTargetDescription = desc.Length > 30 ? desc[..27] + "..." : desc;
             IsBranchIsolated = true;
             AssociationMode = BranchAssociationMode.DimBeyondTrunk;
 
-            var associated = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, hash);
-            foreach (var c in FilteredCommits)
-            {
-                var isAssoc = associated.Contains(c.Hash);
-                c.IsAssociated = isAssoc;
-                c.IsDimmed = !isAssoc;
-            }
+            // GitCommit has no change notification, so mutating IsDimmed on items already in
+            // FilteredCommits wouldn't repaint anything - go through the same Clear+re-Add
+            // refresh HideToFork uses, which forces WPF to re-read Opacity on fresh containers.
+            ApplyFilterSync();
         }
 
         [RelayCommand]
@@ -105,12 +118,53 @@ namespace Girt.ViewModels
             if (string.IsNullOrEmpty(hash)) return;
 
             var desc = (parameter as GitCommit)?.Subject ?? (parameter as GitBranch)?.DisplayName ?? hash[..Math.Min(7, hash.Length)];
+
+            // Isolating trunk itself makes no sense - there's nothing to isolate it from.
+            if (ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, hash).Count == 0)
+            {
+                ShowNothingToIsolateMessage(desc);
+                return;
+            }
+
             IsolatedTargetHash = hash;
             IsolatedTargetDescription = desc.Length > 30 ? desc[..27] + "..." : desc;
             IsBranchIsolated = true;
             AssociationMode = BranchAssociationMode.HideBeyondTrunk;
 
             ApplyFilterSync();
+        }
+
+        private void ShowNothingToIsolateMessage(string desc)
+        {
+            var trunkName = ResolveTrunkBranchName(_allBranches) ?? "trunk";
+            var shortDesc = desc.Length > 40 ? desc[..37] + "..." : desc;
+            _showMessage(
+                "Nothing to Isolate",
+                $"'{shortDesc}' is already on {trunkName} - there's nothing to isolate it from.\n\n" +
+                "Pick a commit or branch that has actually diverged from trunk.");
+        }
+
+        private static readonly string[] TrunkCandidateNames =
+            { "main", "master", "develop", "trunk", "origin/main", "origin/master", "origin/develop" };
+
+        private static string? ResolveTrunkBranchName(IReadOnlyList<GitBranch> branches)
+        {
+            foreach (var candidate in TrunkCandidateNames)
+            {
+                var match = branches.FirstOrDefault(b => b.Name.Equals(candidate, StringComparison.OrdinalIgnoreCase));
+                if (match != null && !string.IsNullOrEmpty(match.TipCommitHash))
+                {
+                    return match.Name;
+                }
+            }
+
+            if (branches.Count > 0)
+            {
+                var firstWithUpstream = branches.FirstOrDefault(b => !string.IsNullOrEmpty(b.UpstreamName));
+                return (firstWithUpstream ?? branches[0]).Name;
+            }
+
+            return null;
         }
 
         [RelayCommand]
@@ -301,11 +355,13 @@ namespace Girt.ViewModels
         /// <summary>
         /// Branch Only (Dim/Hide to Trunk Fork):
         /// ONLY illuminates:
-        /// 1. The split commit on trunk (where branch branched off)
-        /// 2. All commits on this branch
+        /// 1. All commits on this branch (and, if this branch itself forked off another
+        ///    side branch rather than trunk directly, that ancestor branch's commits too)
+        /// 2. The single divergence commit on trunk (where this branch's lineage split off)
         /// 3. Any child branches branching off this branch (A -> B)
         /// 4. The merge commit if merged back into trunk
-        /// Everything else (all other trunk history, other branches) is DIMMED.
+        /// Everything else - all other trunk history, other branches - is DIMMED.
+        /// Isolating trunk itself is nonsensical and returns an empty set (no-op signal).
         /// </summary>
         public HashSet<string> ComputeBranchOnlyAssociatedHashes(
             IReadOnlyList<GitCommit> allCommits,
@@ -368,15 +424,15 @@ namespace Girt.ViewModels
                 trunkMainLine = TraverseFirstParents(trunkHash, commitLookup);
             }
 
-            // If target itself is directly on trunk mainline
+            // Isolating trunk itself doesn't make sense - nothing to isolate it from.
+            // Signal "no-op" with an empty set.
             if (trunkMainLine.Contains(targetHash))
             {
-                associated.Add(targetHash);
                 return associated;
             }
 
             // 4. Target is on a side branch:
-            // Traverse backwards to find the fork point on trunk (WHERE IT SPLIT)
+            // Traverse backwards to find the single divergence commit on trunk (WHERE IT SPLIT).
             string? forkPointHash = null;
             var branchAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var queue = new Queue<string>();
@@ -390,10 +446,7 @@ namespace Girt.ViewModels
 
                 if (trunkMainLine.Contains(hash))
                 {
-                    if (forkPointHash == null)
-                    {
-                        forkPointHash = hash; // The split commit on trunk
-                    }
+                    forkPointHash ??= hash; // The divergence commit on trunk
                     continue; // Do NOT traverse older trunk commits!
                 }
 

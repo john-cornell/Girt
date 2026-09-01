@@ -98,6 +98,18 @@ namespace Girt.ViewModels
         }
 
         [CommunityToolkit.Mvvm.Input.RelayCommand]
+        public void ToggleDiffSection(DiffLine? line)
+        {
+            DiffParser.ToggleCollapsedSection(DiffLines, line);
+        }
+
+        [CommunityToolkit.Mvvm.Input.RelayCommand]
+        public void ExpandAllDiffSections()
+        {
+            DiffParser.ExpandAllCollapsedSections(DiffLines);
+        }
+
+        [CommunityToolkit.Mvvm.Input.RelayCommand]
         public async Task AddToGitIgnoreAsync(GitFileDiff? file)
         {
             file ??= SelectedFile;

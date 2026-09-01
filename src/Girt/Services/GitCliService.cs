@@ -16,6 +16,10 @@ namespace Girt.Services
         private const char RecordSeparator = '\x1e';
         private const char FieldSeparator = '\x1f';
 
+        // Fetch the whole file as context so the diff viewer can collapse/expand unchanged
+        // sections client-side instead of re-running git for every expand.
+        private const int FullDiffContextLines = 100000;
+
         public async Task<string?> GetRepositoryRootAsync(string directoryPath)
         {
             if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
@@ -232,12 +236,12 @@ namespace Girt.Services
             var cleanPath = filePath.Replace("\"", "\\\"");
             if (isStaged)
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --cached -- \"{cleanPath}\"");
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} --cached -- \"{cleanPath}\"");
                 return success ? output : "";
             }
             else
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff -- \"{cleanPath}\"");
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} -- \"{cleanPath}\"");
                 if (success && !string.IsNullOrWhiteSpace(output))
                 {
                     return output;
@@ -593,7 +597,7 @@ namespace Girt.Services
         public async Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show \"{commitHash}\" -- \"{cleanPath}\"");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --unified={FullDiffContextLines} \"{commitHash}\" -- \"{cleanPath}\"");
             return success ? output : "";
         }
 

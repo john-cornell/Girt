@@ -20,6 +20,7 @@
         <converters:NullToVisibilityConverter x:Key="NullToVisConverter" />
         <converters:BoolToVisibilityConverter x:Key="BoolToVisConverter" />
         <converters:HexToBrushConverter x:Key="HexToBrushConverter" />
+        <converters:DepthToIndentConverter x:Key="DepthToIndentConverter" />
     </Window.Resources>
 
     <Window.InputBindings>
@@ -177,6 +178,7 @@
                     <Button Command="{Binding PullCommand}"
                             Style="{StaticResource ToolButtonStyle}"
                             Padding="0"
+                            Margin="0,0,8,0"
                             ToolTip="Click to pull remote commits into local branch">
                         <Border Background="#2610B981"
                                 BorderBrush="#10B981"
@@ -193,6 +195,23 @@
                             </StackPanel>
                         </Border>
                     </Button>
+
+                    <!-- Working indicator - obvious in-progress badge next to the commit/push/pull pills -->
+                    <Border Background="{DynamicResource ActiveItemHighlightBrush}"
+                            BorderBrush="{DynamicResource BorderAccentBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="8,4"
+                            Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisConverter}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⏳ " Foreground="{DynamicResource TextAccentBrush}" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
+                            <TextBlock Text="Working..."
+                                       Foreground="{DynamicResource TextAccentBrush}"
+                                       FontWeight="SemiBold"
+                                       FontSize="12"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
                 <!-- Right Actions: Branch View Mode, Fetch, Reset HEAD, Refresh, Theme -->
@@ -385,11 +404,13 @@
                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontWeight="SemiBold"
                                       Margin="0,0,0,8">
+                              <Grid>
                                 <ListBox ItemsSource="{Binding BranchList.FilteredLocalBranches}"
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         MouseDoubleClick="OnLocalBranchDoubleClicked">
+                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate DataType="{x:Type models:GitBranch}">
                                             <Grid Margin="4,2">
@@ -398,6 +419,55 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
+                                                <!-- Context menu is per-row (bound to {Binding} = this branch), not the
+                                                     ListBox's SelectedItem, since right-click doesn't change selection. -->
+                                                <Grid.ContextMenu>
+                                                    <ContextMenu>
+                                                        <MenuItem Header="🗂 Group into Folders"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="☰ Show as Flat List"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}}" />
+                                                        <Separator />
+                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="Checkout Branch"
+                                                                  Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="🔀 Merge into current branch...">
+                                                            <MenuItem Header="Merge (Default)"
+                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Squash and Merge..."
+                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Merge (--no-ff)..."
+                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                        </MenuItem>
+                                                        <MenuItem Header="⎇ Rebase current branch on this branch..."
+                                                                  Command="{Binding DataContext.RebaseCurrentBranchOnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <MenuItem Header="↺ Reset current branch to this branch..."
+                                                                  Command="{Binding DataContext.ShowResetDialogCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="📋 Copy Branch Name"
+                                                                  Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="Delete Branch..."
+                                                                  Command="{Binding DataContext.BranchList.DeleteBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                    </ContextMenu>
+                                                </Grid.ContextMenu>
 
                                                 <!-- Active Head Indicator -->
                                                 <TextBlock Grid.Column="0"
@@ -425,47 +495,105 @@
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
-                                    <ListBox.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
-                                                      Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
-                                                      Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="Checkout Branch"
-                                                      Command="{Binding BranchList.CheckoutBranchCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="🔀 Merge into current branch...">
-                                                <MenuItem Header="Merge (Default)"
-                                                          Command="{Binding MergeIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                                <MenuItem Header="Squash and Merge..."
-                                                          Command="{Binding MergeSquashIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                                <MenuItem Header="Merge (--no-ff)..."
-                                                          Command="{Binding MergeNoFfIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            </MenuItem>
-                                            <MenuItem Header="⎇ Rebase current branch on this branch..."
-                                                      Command="{Binding RebaseCurrentBranchOnCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <MenuItem Header="↺ Reset current branch to this branch..."
-                                                      Command="{Binding ShowResetDialogCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="📋 Copy Branch Name"
-                                                      Command="{Binding CopyBranchNameCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="Delete Branch..."
-                                                      Command="{Binding BranchList.DeleteBranchCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                        </ContextMenu>
-                                    </ListBox.ContextMenu>
                                 </ListBox>
+
+                                <!-- Grouped-into-folders presentation of the same local branches -->
+                                <ListBox ItemsSource="{Binding BranchList.LocalBranchTree}"
+                                         Style="{StaticResource ModernListBoxStyle}"
+                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type models:BranchTreeItem}">
+                                            <Grid Margin="{Binding Depth, Converter={StaticResource DepthToIndentConverter}}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.ContextMenu>
+                                                    <!-- Leaf-only actions are hidden on folder rows via IsFolder -->
+                                                    <ContextMenu>
+                                                        <MenuItem Header="☰ Show as Flat List"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                        <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="Checkout Branch"
+                                                                  Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="📋 Copy Branch Name"
+                                                                  Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="Delete Branch..."
+                                                                  Command="{Binding DataContext.BranchList.DeleteBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                    </ContextMenu>
+                                                </Grid.ContextMenu>
+
+                                                <!-- Folder row: click to collapse/expand its contents -->
+                                                <Button Grid.Column="0" Grid.ColumnSpan="2"
+                                                        Style="{StaticResource ToolButtonStyle}"
+                                                        HorizontalContentAlignment="Left"
+                                                        Command="{Binding DataContext.BranchList.ToggleLocalBranchFolderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"
+                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="▾" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
+                                                                            <Setter Property="Text" Value="▸" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+
+                                                <!-- Active-head dot (leaf branches only) -->
+                                                <TextBlock Grid.Column="0"
+                                                           Text="● "
+                                                           Foreground="#10B981"
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding Branch.IsCurrent, Converter={StaticResource BoolToVisConverter}}" />
+
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding DisplayName}"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+
+                                                <!-- Checkout Quick Action Button (leaf branches only) -->
+                                                <Button Grid.Column="2"
+                                                        Content="Checkout"
+                                                        Style="{StaticResource ToolButtonStyle}"
+                                                        FontSize="11"
+                                                        Padding="4,1"
+                                                        Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding Branch}"
+                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                              </Grid>
                             </Expander>
 
                             <!-- REMOTE BRANCHES GROUP -->
@@ -474,11 +602,13 @@
                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontWeight="SemiBold"
                                       Margin="0,8,0,0">
+                              <Grid>
                                 <ListBox ItemsSource="{Binding BranchList.FilteredRemoteBranches}"
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         MouseDoubleClick="OnLocalBranchDoubleClicked">
+                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate DataType="{x:Type models:GitBranch}">
                                             <Grid Margin="4,2">
@@ -486,6 +616,51 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
+                                                <!-- Context menu is per-row (bound to {Binding} = this branch), not the
+                                                     ListBox's SelectedItem, since right-click doesn't change selection. -->
+                                                <Grid.ContextMenu>
+                                                    <ContextMenu>
+                                                        <MenuItem Header="🗂 Group into Folders"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="☰ Show as Flat List"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}}" />
+                                                        <Separator />
+                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="Checkout as Local Branch..."
+                                                                  Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="🔀 Merge into current branch...">
+                                                            <MenuItem Header="Merge (Default)"
+                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Squash and Merge..."
+                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Merge (--no-ff)..."
+                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}" />
+                                                        </MenuItem>
+                                                        <MenuItem Header="⎇ Rebase current branch on this branch..."
+                                                                  Command="{Binding DataContext.RebaseCurrentBranchOnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <MenuItem Header="↺ Reset current branch to this branch..."
+                                                                  Command="{Binding DataContext.ShowResetDialogCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                        <Separator />
+                                                        <MenuItem Header="📋 Copy Branch Name"
+                                                                  Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}" />
+                                                    </ContextMenu>
+                                                </Grid.ContextMenu>
 
                                                 <TextBlock Grid.Column="0"
                                                            Text="{Binding DisplayName}"
@@ -503,43 +678,91 @@
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
-                                    <ListBox.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
-                                                      Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
-                                                      Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="Checkout as Local Branch..."
-                                                      Command="{Binding BranchList.CheckoutBranchCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="🔀 Merge into current branch...">
-                                                <MenuItem Header="Merge (Default)"
-                                                          Command="{Binding MergeIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                                <MenuItem Header="Squash and Merge..."
-                                                          Command="{Binding MergeSquashIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                                <MenuItem Header="Merge (--no-ff)..."
-                                                          Command="{Binding MergeNoFfIntoCurrentBranchCommand}"
-                                                          CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            </MenuItem>
-                                            <MenuItem Header="⎇ Rebase current branch on this branch..."
-                                                      Command="{Binding RebaseCurrentBranchOnCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <MenuItem Header="↺ Reset current branch to this branch..."
-                                                      Command="{Binding ShowResetDialogCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                            <Separator />
-                                            <MenuItem Header="📋 Copy Branch Name"
-                                                      Command="{Binding CopyBranchNameCommand}"
-                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
-                                        </ContextMenu>
-                                    </ListBox.ContextMenu>
                                 </ListBox>
+
+                                <!-- Grouped-into-folders presentation of the same remote branches -->
+                                <ListBox ItemsSource="{Binding BranchList.RemoteBranchTree}"
+                                         Style="{StaticResource ModernListBoxStyle}"
+                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type models:BranchTreeItem}">
+                                            <Grid Margin="{Binding Depth, Converter={StaticResource DepthToIndentConverter}}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.ContextMenu>
+                                                    <ContextMenu>
+                                                        <MenuItem Header="☰ Show as Flat List"
+                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                        <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="Checkout as Local Branch..."
+                                                                  Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="📋 Copy Branch Name"
+                                                                  Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding Branch}"
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                    </ContextMenu>
+                                                </Grid.ContextMenu>
+
+                                                <!-- Folder row: click to collapse/expand its contents -->
+                                                <Button Grid.Column="0" Grid.ColumnSpan="2"
+                                                        Style="{StaticResource ToolButtonStyle}"
+                                                        HorizontalContentAlignment="Left"
+                                                        Command="{Binding DataContext.BranchList.ToggleRemoteBranchFolderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"
+                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="▾" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
+                                                                            <Setter Property="Text" Value="▸" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding DisplayName}"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+
+                                                <Button Grid.Column="2"
+                                                        Content="Checkout"
+                                                        Style="{StaticResource ToolButtonStyle}"
+                                                        FontSize="11"
+                                                        Padding="4,1"
+                                                        Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding Branch}"
+                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                              </Grid>
                             </Expander>
                         </StackPanel>
                     </ScrollViewer>
@@ -1281,6 +1504,14 @@
                                          VerticalScrollBarVisibility="Auto"
                                          Margin="0,0,0,10"
                                          ToolTip="Enter commit message (e.g. Fix navbar alignment)..." />
+
+                                <!-- Also push after commit (remembered) -->
+                                <CheckBox Content="Also push after commit"
+                                          IsChecked="{Binding WorkingChanges.PushAfterCommit}"
+                                          Foreground="{DynamicResource TextSecondaryBrush}"
+                                          FontSize="11"
+                                          Margin="0,0,0,8"
+                                          ToolTip="When checked, a successful commit is immediately followed by a push. Remembered across sessions." />
 
                                 <!-- Commit Button -->
                                 <Button Content="{Binding CurrentBranch, StringFormat='✓ Commit to {0}'}"

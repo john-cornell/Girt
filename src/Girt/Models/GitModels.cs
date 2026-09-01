@@ -88,6 +88,21 @@ namespace Girt.Models
             : Name;
     }
 
+    /// <summary>One row of a branch list grouped into folders by '/' in the branch name -
+    /// either a folder header (no Branch) or a leaf branch, indented by Depth.</summary>
+    public class BranchTreeItem
+    {
+        public bool IsFolder { get; set; }
+        public string DisplayName { get; set; } = string.Empty;
+        public int Depth { get; set; }
+        public GitBranch? Branch { get; set; }
+
+        /// <summary>Folder rows only: full path from the tree root (e.g. "feature/BB-100"),
+        /// used as the stable key for remembering which folders are collapsed.</summary>
+        public string FolderPath { get; set; } = string.Empty;
+        public bool IsCollapsed { get; set; }
+    }
+
     public class GitCommit
     {
         public string Hash { get; set; } = string.Empty;
@@ -151,7 +166,8 @@ namespace Girt.Models
         Context,
         Added,
         Deleted,
-        Header
+        Header,
+        CollapsedContext
     }
 
     public class DiffLine
@@ -160,6 +176,17 @@ namespace Girt.Models
         public int? OldLineNumber { get; set; }
         public int? NewLineNumber { get; set; }
         public string Text { get; set; } = string.Empty;
+
+        /// <summary>Only set on a CollapsedContext placeholder: the context lines it's hiding.</summary>
+        public List<DiffLine>? HiddenLines { get; set; }
+
+        /// <summary>
+        /// Shared by a CollapsedContext placeholder and the lines it hides, so a collapsed
+        /// section can be found and re-collapsed again after it's been expanded.
+        /// </summary>
+        public int? CollapseGroupId { get; set; }
+
+        public bool CanToggleCollapse => Type == DiffLineType.CollapsedContext || CollapseGroupId.HasValue;
     }
 
     public enum FileStatusType
