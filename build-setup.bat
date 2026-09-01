@@ -4,10 +4,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "SIGN_CERT=%~dp0installer\GirtCodeSigning.pfx"
 set "RESOLVE_PW=%~dp0installer\resolve-pfx-password.ps1"
 
-echo === Building Girt (Release) ===
-dotnet build src\Girt\Girt.csproj -c Release
+echo === Publishing Girt (Release win-x64) ===
+dotnet publish src\Girt\Girt.csproj -c Release -r win-x64 --self-contained false -o "%~dp0src\Girt\bin\Release\net8.0-windows\publish"
 if errorlevel 1 (
-    echo BUILD FAILED
+    echo PUBLISH FAILED
     exit /b 1
 )
 
@@ -43,9 +43,9 @@ if "!ALLOW_EMPTY_PFX_PASSWORD!"=="1" (
 echo.
 echo === Signing Girt.exe ===
 if defined PW_TMP (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\sign-pe.ps1" -SignTool "%SIGNTOOL_EXE%" -Cert "%SIGN_CERT%" -Target "%~dp0src\Girt\bin\Release\net8.0-windows\Girt.exe" -PasswordFile "!PW_TMP!"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\sign-pe.ps1" -SignTool "%SIGNTOOL_EXE%" -Cert "%SIGN_CERT%" -Target "%~dp0src\Girt\bin\Release\net8.0-windows\publish\Girt.exe" -PasswordFile "!PW_TMP!"
 ) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\sign-pe.ps1" -SignTool "%SIGNTOOL_EXE%" -Cert "%SIGN_CERT%" -Target "%~dp0src\Girt\bin\Release\net8.0-windows\Girt.exe"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\sign-pe.ps1" -SignTool "%SIGNTOOL_EXE%" -Cert "%SIGN_CERT%" -Target "%~dp0src\Girt\bin\Release\net8.0-windows\publish\Girt.exe"
 )
 if errorlevel 1 (
     echo.
