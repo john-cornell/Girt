@@ -341,14 +341,23 @@ namespace Girt.Tests
             // User selects f65af44 in the commit history
             vm.SelectedCommit = f_wip;
 
-            // Verified associated: f65af44, ac25c3a (child commit), 78a1306 (PR merge), 87c5e2a (descendant tip), c0 (fork point)
+            // Verified NOT dimmed:
+            // 1. Where it split from trunk (c0)
+            // 2. All commits on Branch A (f_wip, f_unit)
+            // 3. The merge commit into trunk (mergePR)
+            Assert.False(c0.IsDimmed);
             Assert.False(f_wip.IsDimmed);
             Assert.False(f_unit.IsDimmed);
             Assert.False(mergePR.IsDimmed);
-            Assert.False(c0.IsDimmed);
 
-            // Verified dimmed: older trunk (root), parallel trunk before merge (c1), unrelated branch (x1)
+            // Verified DIMMED:
+            // 1. Subsequent trunk commits ahead of merge (tip)
+            // 2. Older trunk commits before split (root)
+            // 3. Parallel trunk commits (c1)
+            // 4. Unrelated branches (x1)
+            Assert.True(tip.IsDimmed);
             Assert.True(root.IsDimmed);
+            Assert.True(c1.IsDimmed);
             Assert.True(x1.IsDimmed);
         }
 
