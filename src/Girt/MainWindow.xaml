@@ -197,31 +197,24 @@
 
                 <!-- Right Actions: Branch View Mode, Fetch, Reset HEAD, Refresh, Theme -->
                 <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                    <!-- Branch Association View Mode Selector -->
+                    <!-- Active Branch Isolation Indicator Pill & Reset -->
                     <Border Background="{DynamicResource CardBackgroundBrush}"
-                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderBrush="#3B82F6"
                             BorderThickness="1"
                             CornerRadius="6"
-                            Padding="6,2"
+                            Padding="8,2"
                             Margin="0,0,8,0"
                             VerticalAlignment="Center"
-                            ToolTip="Branch Association Filter (relative to trunk -> branch)">
+                            Visibility="{Binding CommitHistory.IsBranchIsolated, Converter={StaticResource BoolToVisConverter}}">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="⑂ View: " Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,4,0" />
-                            <ComboBox SelectedValuePath="Tag"
-                                      SelectedValue="{Binding CommitHistory.AssociationMode, Mode=TwoWay}"
-                                      Background="Transparent"
-                                      BorderThickness="0"
-                                      Foreground="{DynamicResource TextPrimaryBrush}"
-                                      FontSize="12"
-                                      FontWeight="SemiBold"
-                                      VerticalAlignment="Center">
-                                <ComboBoxItem Content="All Branches" Tag="{x:Static models:BranchAssociationMode.ShowAll}" />
-                                <ComboBoxItem Content="Dim to Trunk Fork" Tag="{x:Static models:BranchAssociationMode.DimBeyondTrunk}" />
-                                <ComboBoxItem Content="Hide to Trunk Fork" Tag="{x:Static models:BranchAssociationMode.HideBeyondTrunk}" />
-                                <ComboBoxItem Content="Dim Unrelated (with Trunk)" Tag="{x:Static models:BranchAssociationMode.DimUnrelated}" />
-                                <ComboBoxItem Content="Hide Unrelated (with Trunk)" Tag="{x:Static models:BranchAssociationMode.HideUnrelated}" />
-                            </ComboBox>
+                            <TextBlock Text="🔍 Isolated: " Foreground="#3B82F6" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding CommitHistory.IsolatedTargetDescription}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0" MaxWidth="180" TextTrimming="CharacterEllipsis" />
+                            <Button Content="✕ Show All"
+                                    Style="{StaticResource ToolButtonStyle}"
+                                    Command="{Binding CommitHistory.ClearIsolationCommand}"
+                                    Padding="4,1"
+                                    FontSize="10"
+                                    ToolTip="Clear branch isolation and show all commits vivid" />
                         </StackPanel>
                     </Border>
 
@@ -434,6 +427,13 @@
                                     </ListBox.ItemTemplate>
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
+                                            <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                      Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                      Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
                                             <MenuItem Header="Checkout Branch"
                                                       Command="{Binding BranchList.CheckoutBranchCommand}"
                                                       CommandParameter="{Binding BranchList.SelectedBranch}" />
@@ -505,6 +505,13 @@
                                     </ListBox.ItemTemplate>
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
+                                            <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                      Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                      Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      CommandParameter="{Binding BranchList.SelectedBranch}" />
+                                            <Separator />
                                             <MenuItem Header="Checkout as Local Branch..."
                                                       Command="{Binding BranchList.CheckoutBranchCommand}"
                                                       CommandParameter="{Binding BranchList.SelectedBranch}" />
@@ -674,6 +681,18 @@
                         </ListView.ItemContainerStyle>
                         <ListView.ContextMenu>
                             <ContextMenu>
+                                <!-- Branch Isolation Options -->
+                                <MenuItem Header="🔍 Dim to Trunk Fork (Isolate this branch)"
+                                          Command="{Binding CommitHistory.DimToForkCommand}"
+                                          CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                <MenuItem Header="👁 Hide to Trunk Fork (Isolate this branch)"
+                                          Command="{Binding CommitHistory.HideToForkCommand}"
+                                          CommandParameter="{Binding CommitHistory.SelectedCommit}" />
+                                <MenuItem Header="✕ Show All Commits (Reset)"
+                                          Command="{Binding CommitHistory.ClearIsolationCommand}"
+                                          Visibility="{Binding CommitHistory.IsBranchIsolated, Converter={StaticResource BoolToVisConverter}}" />
+                                <Separator />
+
                                 <!-- Copy Submenu -->
                                 <MenuItem Header="📋 Copy">
                                     <MenuItem Header="Commit SHA (Full)"

@@ -45,6 +45,15 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private bool _isLoading;
 
+        [ObservableProperty]
+        private bool _isBranchIsolated;
+
+        [ObservableProperty]
+        private string? _isolatedTargetHash;
+
+        [ObservableProperty]
+        private string? _isolatedTargetDescription;
+
         private List<GitCommit> _allCommits = new();
         private List<GitBranch> _allBranches = new();
         private CancellationTokenSource? _filterCts;
@@ -61,15 +70,6 @@ namespace Girt.ViewModels
         partial void OnSelectedCommitChanged(GitCommit? value)
         {
             _onCommitSelected(value);
-
-            if (value != null && (AssociationMode == BranchAssociationMode.DimBeyondTrunk || AssociationMode == BranchAssociationMode.DimUnrelated))
-            {
-                UpdateDimmedStatesOnly();
-            }
-            else if (value != null && (AssociationMode == BranchAssociationMode.HideBeyondTrunk || AssociationMode == BranchAssociationMode.HideUnrelated))
-            {
-                ApplyFilterSync();
-            }
         }
 
         partial void OnFilterSubjectChanged(string value) => ScheduleApplyFilter();
@@ -77,18 +77,57 @@ namespace Girt.ViewModels
         partial void OnFilterDateChanged(string value) => ScheduleApplyFilter();
         partial void OnFilterShaChanged(string value) => ScheduleApplyFilter();
 
-        partial void OnAssociationModeChanged(BranchAssociationMode value)
+        [RelayCommand]
+        public void DimToFork(object? parameter)
         {
+            var hash = (parameter as GitCommit)?.Hash ?? (parameter as GitBranch)?.TipCommitHash ?? (parameter as string) ?? SelectedCommit?.Hash;
+            if (string.IsNullOrEmpty(hash)) return;
+
+            var desc = (parameter as GitCommit)?.Subject ?? (parameter as GitBranch)?.DisplayName ?? hash[..Math.Min(7, hash.Length)];
+            IsolatedTargetHash = hash;
+            IsolatedTargetDescription = desc.Length > 30 ? desc[..27] + "..." : desc;
+            IsBranchIsolated = true;
+            AssociationMode = BranchAssociationMode.DimBeyondTrunk;
+
+            var associated = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, hash);
+            foreach (var c in FilteredCommits)
+            {
+                var isAssoc = associated.Contains(c.Hash);
+                c.IsAssociated = isAssoc;
+                c.IsDimmed = !isAssoc;
+            }
+        }
+
+        [RelayCommand]
+        public void HideToFork(object? parameter)
+        {
+            var hash = (parameter as GitCommit)?.Hash ?? (parameter as GitBranch)?.TipCommitHash ?? (parameter as string) ?? SelectedCommit?.Hash;
+            if (string.IsNullOrEmpty(hash)) return;
+
+            var desc = (parameter as GitCommit)?.Subject ?? (parameter as GitBranch)?.DisplayName ?? hash[..Math.Min(7, hash.Length)];
+            IsolatedTargetHash = hash;
+            IsolatedTargetDescription = desc.Length > 30 ? desc[..27] + "..." : desc;
+            IsBranchIsolated = true;
+            AssociationMode = BranchAssociationMode.HideBeyondTrunk;
+
             ApplyFilterSync();
         }
 
         [RelayCommand]
-        public void SetAssociationMode(string modeName)
+        public void ClearIsolation()
         {
-            if (Enum.TryParse<BranchAssociationMode>(modeName, true, out var mode))
+            IsolatedTargetHash = null;
+            IsolatedTargetDescription = null;
+            IsBranchIsolated = false;
+            AssociationMode = BranchAssociationMode.ShowAll;
+
+            foreach (var c in _allCommits)
             {
-                AssociationMode = mode;
+                c.IsAssociated = true;
+                c.IsDimmed = false;
             }
+
+            ApplyFilterSync();
         }
 
         [RelayCommand]
@@ -108,17 +147,6 @@ namespace Girt.ViewModels
             if (!string.IsNullOrEmpty(currentBranch))
             {
                 ActiveBranchName = currentBranch;
-
-                var branchMatch = _allBranches.FirstOrDefault(b => b.Name.Equals(currentBranch, StringComparison.OrdinalIgnoreCase) ||
-                                                               b.DisplayName.Equals(currentBranch, StringComparison.OrdinalIgnoreCase));
-                if (branchMatch != null && !string.IsNullOrEmpty(branchMatch.TipCommitHash))
-                {
-                    var commit = _allCommits.FirstOrDefault(c => c.Hash.Equals(branchMatch.TipCommitHash, StringComparison.OrdinalIgnoreCase));
-                    if (commit != null)
-                    {
-                        SelectedCommit = commit;
-                    }
-                }
             }
             ApplyFilterCore();
         }
@@ -190,33 +218,6 @@ namespace Girt.ViewModels
             ApplyFilteredCommitsList(matches);
         }
 
-        private void UpdateDimmedStatesOnly()
-        {
-            if (_allCommits.Count == 0) return;
-
-            var currentMode = AssociationMode;
-            if (currentMode == BranchAssociationMode.ShowAll) return;
-
-            var targetAnchor = SelectedCommit?.Hash ?? ActiveBranchName;
-            HashSet<string> associated;
-
-            if (currentMode == BranchAssociationMode.DimBeyondTrunk || currentMode == BranchAssociationMode.HideBeyondTrunk)
-            {
-                associated = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, targetAnchor);
-            }
-            else
-            {
-                associated = ComputeFullTrunkAssociatedHashes(_allCommits, _allBranches, targetAnchor);
-            }
-
-            foreach (var c in FilteredCommits)
-            {
-                var isAssoc = associated.Contains(c.Hash);
-                c.IsAssociated = isAssoc;
-                c.IsDimmed = !isAssoc;
-            }
-        }
-
         private List<GitCommit> ComputeFilteredMatches()
         {
             if (_allCommits.Count == 0) return new List<GitCommit>();
@@ -225,20 +226,14 @@ namespace Girt.ViewModels
             var authorQuery = FilterAuthor?.Trim() ?? string.Empty;
             var dateQuery = FilterDate?.Trim() ?? string.Empty;
             var shaQuery = FilterSha?.Trim() ?? string.Empty;
-            var currentMode = AssociationMode;
-            var targetAnchor = SelectedCommit?.Hash ?? ActiveBranchName;
 
-            var isHideMode = currentMode == BranchAssociationMode.HideUnrelated || currentMode == BranchAssociationMode.HideBeyondTrunk;
-            var isDimMode = currentMode == BranchAssociationMode.DimUnrelated || currentMode == BranchAssociationMode.DimBeyondTrunk;
+            var isHideMode = IsBranchIsolated && AssociationMode == BranchAssociationMode.HideBeyondTrunk;
+            var isDimMode = IsBranchIsolated && AssociationMode == BranchAssociationMode.DimBeyondTrunk;
 
             HashSet<string>? associatedHashes = null;
-            if (currentMode == BranchAssociationMode.DimBeyondTrunk || currentMode == BranchAssociationMode.HideBeyondTrunk)
+            if (IsBranchIsolated && !string.IsNullOrEmpty(IsolatedTargetHash))
             {
-                associatedHashes = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, targetAnchor);
-            }
-            else if (currentMode == BranchAssociationMode.DimUnrelated || currentMode == BranchAssociationMode.HideUnrelated)
-            {
-                associatedHashes = ComputeFullTrunkAssociatedHashes(_allCommits, _allBranches, targetAnchor);
+                associatedHashes = ComputeBranchOnlyAssociatedHashes(_allCommits, _allBranches, IsolatedTargetHash);
             }
 
             var matches = new List<GitCommit>();
@@ -462,56 +457,6 @@ namespace Girt.ViewModels
             if (!string.IsNullOrEmpty(forkPointHash))
             {
                 associated.Add(forkPointHash);
-            }
-
-            return associated;
-        }
-
-        /// <summary>
-        /// Branch + Full Trunk (Dim/Hide Unrelated):
-        /// Illuminates active branch lineage AND the entire trunk history.
-        /// </summary>
-        public HashSet<string> ComputeFullTrunkAssociatedHashes(
-            IReadOnlyList<GitCommit> allCommits,
-            IReadOnlyList<GitBranch> branches,
-            string? targetAnchor)
-        {
-            var commitLookup = allCommits.ToDictionary(c => c.Hash, StringComparer.OrdinalIgnoreCase);
-            var associated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (allCommits.Count == 0) return associated;
-
-            // 1. Identify Trunk Branch Tip
-            string? trunkHash = null;
-            var trunkCandidateNames = new[] { "main", "master", "develop", "trunk", "origin/main", "origin/master", "origin/develop" };
-            foreach (var candidate in trunkCandidateNames)
-            {
-                var match = branches.FirstOrDefault(b => b.Name.Equals(candidate, StringComparison.OrdinalIgnoreCase));
-                if (match != null && !string.IsNullOrEmpty(match.TipCommitHash))
-                {
-                    trunkHash = match.TipCommitHash;
-                    break;
-                }
-            }
-
-            if (string.IsNullOrEmpty(trunkHash) && branches.Count > 0)
-            {
-                var firstWithUpstream = branches.FirstOrDefault(b => !string.IsNullOrEmpty(b.UpstreamName));
-                trunkHash = firstWithUpstream?.TipCommitHash ?? branches[0].TipCommitHash;
-            }
-
-            // Trunk Ancestors
-            var trunkAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrEmpty(trunkHash))
-            {
-                TraverseAncestors(trunkHash, commitLookup, trunkAncestors);
-                foreach (var h in trunkAncestors) associated.Add(h);
-            }
-
-            // Target Ancestors
-            var branchSpecific = ComputeBranchOnlyAssociatedHashes(allCommits, branches, targetAnchor);
-            foreach (var h in branchSpecific)
-            {
-                associated.Add(h);
             }
 
             return associated;
