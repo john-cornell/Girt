@@ -9,7 +9,7 @@ using Girt.Services;
 
 namespace Girt.ViewModels
 {
-    public partial class WorkingChangesViewModel : ObservableObject
+    public partial class WorkingChangesViewModel : ObservableObject, IDiffLineHost
     {
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
@@ -151,13 +151,11 @@ namespace Girt.ViewModels
             }
         }
 
-        [RelayCommand]
         public void ToggleDiffSection(DiffLine? line)
         {
             DiffParser.ToggleCollapsedSection(DiffLines, line);
         }
 
-        [RelayCommand]
         public void ExpandAllDiffSections()
         {
             DiffParser.ExpandAllCollapsedSections(DiffLines);

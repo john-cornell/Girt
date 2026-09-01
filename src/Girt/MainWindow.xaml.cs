@@ -57,7 +57,18 @@ namespace Girt
 
         private async void OnLocalBranchDoubleClicked(object sender, MouseButtonEventArgs e)
         {
-            if (sender is ListBox listBox && listBox.SelectedItem is GitBranch branch)
+            if (sender is not ListBox listBox) return;
+
+            // Handles both the flat branch lists (GitBranch items) and the folder-grouped tree
+            // (BranchTreeItem rows) - double-clicking a folder header is a no-op, not a checkout.
+            var branch = listBox.SelectedItem switch
+            {
+                GitBranch b => b,
+                BranchTreeItem { IsFolder: false } item => item.Branch,
+                _ => null
+            };
+
+            if (branch != null)
             {
                 await _viewModel.BranchList.CheckoutBranchAsync(branch);
             }

@@ -400,10 +400,39 @@
 
                             <!-- LOCAL BRANCHES GROUP -->
                             <Expander IsExpanded="{Binding BranchList.IsLocalExpanded}"
-                                      Header="Local Branches"
                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontWeight="SemiBold"
                                       Margin="0,0,0,8">
+                              <Expander.Header>
+                                <Grid>
+                                  <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                  </Grid.ColumnDefinitions>
+                                  <TextBlock Grid.Column="0" Text="Local Branches" VerticalAlignment="Center" />
+                                  <!-- Direct binding, no ContextMenu/Popup indirection - reliably reflects and flips the mode. -->
+                                  <Button Grid.Column="1"
+                                          Style="{StaticResource ToolButtonStyle}"
+                                          FontSize="10"
+                                          FontWeight="Normal"
+                                          Padding="4,1"
+                                          Command="{Binding BranchList.ToggleGroupBranchesIntoFoldersCommand}"
+                                          ToolTip="Toggle grouping local branches into folders by '/' in their name">
+                                    <TextBlock>
+                                      <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                          <Setter Property="Text" Value="🗂 Folders" />
+                                          <Style.Triggers>
+                                            <DataTrigger Binding="{Binding BranchList.GroupBranchesIntoFolders}" Value="True">
+                                              <Setter Property="Text" Value="☰ Flat" />
+                                            </DataTrigger>
+                                          </Style.Triggers>
+                                        </Style>
+                                      </TextBlock.Style>
+                                    </TextBlock>
+                                  </Button>
+                                </Grid>
+                              </Expander.Header>
                               <Grid>
                                 <ListBox ItemsSource="{Binding BranchList.FilteredLocalBranches}"
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
@@ -598,10 +627,38 @@
 
                             <!-- REMOTE BRANCHES GROUP -->
                             <Expander IsExpanded="{Binding BranchList.IsRemoteExpanded}"
-                                      Header="Remote Branches"
                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontWeight="SemiBold"
                                       Margin="0,8,0,0">
+                              <Expander.Header>
+                                <Grid>
+                                  <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                  </Grid.ColumnDefinitions>
+                                  <TextBlock Grid.Column="0" Text="Remote Branches" VerticalAlignment="Center" />
+                                  <Button Grid.Column="1"
+                                          Style="{StaticResource ToolButtonStyle}"
+                                          FontSize="10"
+                                          FontWeight="Normal"
+                                          Padding="4,1"
+                                          Command="{Binding BranchList.ToggleGroupBranchesIntoFoldersCommand}"
+                                          ToolTip="Toggle grouping remote branches into folders by '/' in their name">
+                                    <TextBlock>
+                                      <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                          <Setter Property="Text" Value="🗂 Folders" />
+                                          <Style.Triggers>
+                                            <DataTrigger Binding="{Binding BranchList.GroupBranchesIntoFolders}" Value="True">
+                                              <Setter Property="Text" Value="☰ Flat" />
+                                            </DataTrigger>
+                                          </Style.Triggers>
+                                        </Style>
+                                      </TextBlock.Style>
+                                    </TextBlock>
+                                  </Button>
+                                </Grid>
+                              </Expander.Header>
                               <Grid>
                                 <ListBox ItemsSource="{Binding BranchList.FilteredRemoteBranches}"
                                          SelectedItem="{Binding BranchList.SelectedBranch}"

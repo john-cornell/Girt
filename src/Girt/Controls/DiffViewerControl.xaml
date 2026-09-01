@@ -42,11 +42,10 @@
                             <Border.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="{Binding Converter={StaticResource DiffToggleLabelConverter}}"
-                                              Command="{Binding DataContext.ToggleDiffSectionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                              CommandParameter="{Binding}"
+                                              Click="OnToggleDiffSectionClicked"
                                               Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
                                     <MenuItem Header="Show Whole File"
-                                              Command="{Binding DataContext.ExpandAllDiffSectionsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                              Click="OnExpandAllDiffSectionsClicked" />
                                 </ContextMenu>
                             </Border.ContextMenu>
                             <Grid>

@@ -25,7 +25,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.4.1";
+        public const string AppVersion = "0.4.2";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
