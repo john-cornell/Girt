@@ -41,6 +41,9 @@ namespace Girt.Services
         Task<(bool Success, string Output)> StashApplyAsync(string repoPath);
         Task<int> GetStashCountAsync(string repoPath);
         Task<string?> GetTopStashDescriptionAsync(string repoPath);
+        Task<string?> GetGitConfigValueAsync(string repoPath, string key, bool global);
+        Task<(bool Success, string Output)> SetGitConfigValueAsync(string repoPath, string key, string value, bool global);
+        Task<(bool Success, string Output)> UnsetLocalGitConfigValueAsync(string repoPath, string key);
         Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash);
         Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash);
         Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false);

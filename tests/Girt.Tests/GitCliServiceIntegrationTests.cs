@@ -174,6 +174,28 @@ namespace Girt.Tests
             Assert.Contains(changes.StagedFiles, f => f.Path == "logs/debug.log" && f.Status == FileStatusType.Deleted);
         }
 
+        [Fact]
+        public async Task GitConfigValueAsync_LocalScope_SetGetAndUnsetRoundTrip()
+        {
+            // Local scope only - a global-scoped test would write to the real developer's
+            // ~/.gitconfig, which must never happen from an automated test.
+            var (setOk, _) = await _gitService.SetGitConfigValueAsync(_testRepoPath, "user.name", "Repo Override", global: false);
+            Assert.True(setOk);
+
+            var value = await _gitService.GetGitConfigValueAsync(_testRepoPath, "user.name", global: false);
+            Assert.Equal("Repo Override", value);
+
+            // "Repo Override" replaced the constructor's own local "Girt Tester" value (both
+            // local scope), so unsetting now removes the only local value there is - with no
+            // global identity configured in this isolated test repo, the effective value drops
+            // to null rather than falling back to anything.
+            var (unsetOk, _) = await _gitService.UnsetLocalGitConfigValueAsync(_testRepoPath, "user.name");
+            Assert.True(unsetOk);
+
+            var afterUnset = await _gitService.GetGitConfigValueAsync(_testRepoPath, "user.name", global: false);
+            Assert.Null(afterUnset);
+        }
+
         public void Dispose()
         {
             try

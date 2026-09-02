@@ -7,20 +7,6 @@ using Girt.Models;
 
 namespace Girt.Converters
 {
-    public class DepthToIndentConverter : IValueConverter
-    {
-        public double IndentPerLevel { get; set; } = 16;
-
-        public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-        {
-            var depth = value is int i ? i : 0;
-            return new Thickness(depth * IndentPerLevel, 0, 0, 0);
-        }
-
-        public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-            throw new NotImplementedException();
-    }
-
     public class NullToVisibilityConverter : IValueConverter
     {
         public bool Invert { get; set; }

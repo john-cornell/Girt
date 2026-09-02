@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420">
+  <!-- Transparent background - WPF's native SplashScreen shows a PNG's alpha as a shaped
+       window, so this floats as icon + wordmark with no visible rectangle. -->
+
+  <g transform="translate(30,50) scale(0.3125)">
+    <circle cx="512" cy="512" r="480" fill="#1878A8"/>
+    <circle cx="512" cy="512" r="480" fill="none" stroke="#EAF6FA" stroke-width="18" opacity="0.55"/>
+    <circle cx="512" cy="512" r="404" fill="none" stroke="#EAF6FA" stroke-width="16" opacity="0.35"/>
+    <circle cx="710" cy="310" r="52" fill="#FFD166"/>
+    <ellipse cx="512" cy="640" rx="270" ry="72" fill="#F2D48C"/>
+    <g fill="#2E9B4F">
+      <ellipse cx="418" cy="562" rx="136" ry="112"/>
+      <ellipse cx="566" cy="586" rx="158" ry="100"/>
+      <ellipse cx="500" cy="458" rx="106" ry="122"/>
+    </g>
+    <g fill="#3FB25F">
+      <ellipse cx="466" cy="412" rx="78" ry="90"/>
+    </g>
+    <g fill="#1F6E38">
+      <circle cx="398" cy="492" r="29"/>
+      <circle cx="466" cy="458" r="22"/>
+    </g>
+    <rect x="392" y="494" width="11" height="34" fill="#7A4A28"/>
+    <rect x="460" y="462" width="9" height="27" fill="#7A4A28"/>
+  </g>
+
+  <text x="410" y="255" font-family="Segoe UI, Arial, sans-serif" font-size="150" font-weight="700" fill="#1A2B33">Girt</text>
+  <text x="415" y="300" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="400" fill="#5B6B72">Modern Git Client</text>
+</svg>

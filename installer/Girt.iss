@@ -4,7 +4,7 @@
 ; Requires: dotnet build src\Girt\Girt.csproj -c Release (run first)
 
 #define MyAppName "Girt"
-#define MyAppVersion "0.4.27"
+#define MyAppVersion "0.4.31"
 #define MyAppPublisher "Girt"
 #define MyAppExeName "Girt.exe"
 

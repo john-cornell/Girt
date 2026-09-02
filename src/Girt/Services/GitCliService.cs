@@ -393,6 +393,26 @@ namespace Girt.Services
             return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         }
 
+        public async Task<string?> GetGitConfigValueAsync(string repoPath, string key, bool global)
+        {
+            var scope = global ? "--global" : "--local";
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"config {scope} --get {key}").ConfigureAwait(false);
+            return success && !string.IsNullOrWhiteSpace(output) ? output.Trim() : null;
+        }
+
+        public async Task<(bool Success, string Output)> SetGitConfigValueAsync(string repoPath, string key, string value, bool global)
+        {
+            var scope = global ? "--global" : "--local";
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"config {scope} {key} \"{value.Replace("\"", "\\\"")}\"").ConfigureAwait(false);
+            return (success, (output + error).Trim());
+        }
+
+        public async Task<(bool Success, string Output)> UnsetLocalGitConfigValueAsync(string repoPath, string key)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"config --local --unset {key}").ConfigureAwait(false);
+            return (success, (output + error).Trim());
+        }
+
         public async Task<string?> GetTopStashDescriptionAsync(string repoPath)
         {
             var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list -1").ConfigureAwait(false);

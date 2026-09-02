@@ -20,8 +20,6 @@ namespace Girt
         private Forms.ToolStripMenuItem? _minimizeToTrayMenuItem;
         private Forms.ToolStripMenuItem? _minimizeOnCloseMenuItem;
         private bool _isExiting;
-        private bool _minimizeToTray;
-        private bool _minimizeOnClose;
 
         public MainWindow()
         {
@@ -33,11 +31,13 @@ namespace Girt
 
             // Apply saved user theme preference (persisted in %APPDATA%\Girt\settings.json)
             _themeService.ApplyTheme(_themeService.CurrentTheme);
-            _minimizeToTray = _themeService.LoadMinimizeToTray();
-            _minimizeOnClose = _themeService.LoadMinimizeOnClose();
 
             _viewModel = new MainViewModel(gitService, recentService, _themeService);
             DataContext = _viewModel;
+
+            // MinimizeToTray/MinimizeOnClose live on _viewModel.Settings (shared with the
+            // Settings dialog) - mirror changes into the tray menu's checkmarks either way.
+            _viewModel.Settings.PropertyChanged += OnSettingsPropertyChanged;
 
             InitializeTrayIcon();
             StateChanged += OnWindowStateChanged;
@@ -65,8 +65,8 @@ namespace Girt
             };
             _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
 
-            _minimizeToTrayMenuItem = new Forms.ToolStripMenuItem("Minimize to Tray", null, OnToggleMinimizeToTray) { Checked = _minimizeToTray };
-            _minimizeOnCloseMenuItem = new Forms.ToolStripMenuItem("Minimize on Close", null, OnToggleMinimizeOnClose) { Checked = _minimizeOnClose };
+            _minimizeToTrayMenuItem = new Forms.ToolStripMenuItem("Minimize to Tray", null, OnToggleMinimizeToTray) { Checked = _viewModel.Settings.MinimizeToTray };
+            _minimizeOnCloseMenuItem = new Forms.ToolStripMenuItem("Minimize on Close", null, OnToggleMinimizeOnClose) { Checked = _viewModel.Settings.MinimizeOnClose };
 
             var menu = new Forms.ContextMenuStrip();
             menu.Items.Add("Open Girt", null, (_, _) => RestoreFromTray());
@@ -80,16 +80,25 @@ namespace Girt
 
         private void OnToggleMinimizeToTray(object? sender, EventArgs e)
         {
-            _minimizeToTray = !_minimizeToTray;
-            _minimizeToTrayMenuItem!.Checked = _minimizeToTray;
-            _themeService.SaveMinimizeToTray(_minimizeToTray);
+            _viewModel.Settings.MinimizeToTray = !_viewModel.Settings.MinimizeToTray;
         }
 
         private void OnToggleMinimizeOnClose(object? sender, EventArgs e)
         {
-            _minimizeOnClose = !_minimizeOnClose;
-            _minimizeOnCloseMenuItem!.Checked = _minimizeOnClose;
-            _themeService.SaveMinimizeOnClose(_minimizeOnClose);
+            _viewModel.Settings.MinimizeOnClose = !_viewModel.Settings.MinimizeOnClose;
+        }
+
+        private void OnSettingsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            switch (e.PropertyName)
+            {
+                case nameof(SettingsViewModel.MinimizeToTray):
+                    if (_minimizeToTrayMenuItem != null) _minimizeToTrayMenuItem.Checked = _viewModel.Settings.MinimizeToTray;
+                    break;
+                case nameof(SettingsViewModel.MinimizeOnClose):
+                    if (_minimizeOnCloseMenuItem != null) _minimizeOnCloseMenuItem.Checked = _viewModel.Settings.MinimizeOnClose;
+                    break;
+            }
         }
 
         private void RestoreFromTray()
@@ -111,7 +120,7 @@ namespace Girt
         // no-op and the window minimizes to the taskbar normally.
         private void OnWindowStateChanged(object? sender, EventArgs e)
         {
-            if (WindowState == WindowState.Minimized && _minimizeToTray)
+            if (WindowState == WindowState.Minimized && _viewModel.Settings.MinimizeToTray)
             {
                 Hide();
             }
@@ -121,7 +130,7 @@ namespace Girt
         // otherwise the window closes and the app exits normally.
         private void OnWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
-            if (_isExiting || !_minimizeOnClose) return;
+            if (_isExiting || !_viewModel.Settings.MinimizeOnClose) return;
 
             e.Cancel = true;
             Hide();
@@ -154,11 +163,17 @@ namespace Girt
 
         private async void OnLocalBranchDoubleClicked(object sender, MouseButtonEventArgs e)
         {
-            if (sender is not ListBox listBox) return;
+            // Handles both the flat branch lists (ListBox of GitBranch items) and the
+            // folder-grouped tree (TreeView of BranchTreeItem nodes) - double-clicking a folder
+            // header is a no-op, not a checkout.
+            object? selected = sender switch
+            {
+                ListBox listBox => listBox.SelectedItem,
+                TreeView treeView => treeView.SelectedItem,
+                _ => null
+            };
 
-            // Handles both the flat branch lists (GitBranch items) and the folder-grouped tree
-            // (BranchTreeItem rows) - double-clicking a folder header is a no-op, not a checkout.
-            var branch = listBox.SelectedItem switch
+            var branch = selected switch
             {
                 GitBranch b => b,
                 BranchTreeItem { IsFolder: false } item => item.Branch,
@@ -202,6 +217,26 @@ namespace Girt
         private void OnClearIsolationClicked(object sender, RoutedEventArgs e)
         {
             _viewModel.CommitHistory.ClearIsolation();
+        }
+
+        // Same rationale as OnTogglePinBranchClicked: these MenuItems are generated via
+        // ItemsSource inside a submenu popup, so their DataContext is the folder path string
+        // itself (not the panel's ViewModel) - resolve it directly rather than trying to bind
+        // Command back out through the popup boundary.
+        private void OnIgnoreFolderInWorkingChangesClicked(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: string folderPath })
+            {
+                _viewModel.WorkingChanges.IgnoreFolderCommand.Execute(folderPath);
+            }
+        }
+
+        private void OnIgnoreFolderInCommitDetailClicked(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: string folderPath })
+            {
+                _viewModel.CommitDetail.IgnoreFolderCommand.Execute(folderPath);
+            }
         }
 
         // These per-row branch ContextMenus sit inside virtualized ListBoxes, where Visibility
@@ -263,6 +298,32 @@ namespace Girt
                 parent = VisualTreeHelper.GetParent(parent);
             }
             return parent as ScrollViewer;
+        }
+
+        // Settings > "Expand folders on" picks whether this fires on the first click or
+        // requires a second - MouseButtonEventArgs.ClickCount reports both from one event, so
+        // there's no need for separate Click/MouseDoubleClick wiring per mode.
+        private void OnBranchFolderRowMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            var requiredClicks = _viewModel.Settings.FolderExpandOnSingleClick ? 1 : 2;
+            if (e.ClickCount != requiredClicks) return;
+            if (sender is not DependencyObject source) return;
+
+            var treeViewItem = FindAncestorTreeViewItem(source);
+            if (treeViewItem == null) return;
+
+            treeViewItem.IsExpanded = !treeViewItem.IsExpanded;
+            e.Handled = true;
+        }
+
+        private static TreeViewItem? FindAncestorTreeViewItem(DependencyObject element)
+        {
+            var parent = VisualTreeHelper.GetParent(element);
+            while (parent != null && parent is not TreeViewItem)
+            {
+                parent = VisualTreeHelper.GetParent(parent);
+            }
+            return parent as TreeViewItem;
         }
     }
 }

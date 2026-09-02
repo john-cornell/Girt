@@ -37,6 +37,11 @@ namespace Girt.Services
         /// the app. Toggled from the tray icon's own context menu.</summary>
         public bool MinimizeOnClose { get; set; } = true;
 
+        /// <summary>Whether clicking a folder row in the branch tree expands/collapses it with
+        /// a single click, vs. requiring a double-click (leaves always keep their own
+        /// single/double-click behavior for selection/checkout either way).</summary>
+        public bool FolderExpandOnSingleClick { get; set; } = true;
+
         /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
         public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
     }
@@ -153,6 +158,15 @@ namespace Girt.Services
         {
             var settings = LoadSettings();
             settings.MinimizeOnClose = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadFolderExpandOnSingleClick() => LoadSettings().FolderExpandOnSingleClick;
+
+        public void SaveFolderExpandOnSingleClick(bool value)
+        {
+            var settings = LoadSettings();
+            settings.FolderExpandOnSingleClick = value;
             SaveSettings(settings);
         }
 

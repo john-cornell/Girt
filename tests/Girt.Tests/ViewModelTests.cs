@@ -141,6 +141,27 @@ namespace Girt.Tests
         public int StashCount { get; set; }
         public Task<int> GetStashCountAsync(string repoPath) => Task.FromResult(StashCount);
         public Task<string?> GetTopStashDescriptionAsync(string repoPath) => Task.FromResult<string?>(StashCount > 0 ? "stash@{0}: WIP on test" : null);
+
+        public Dictionary<string, string> GlobalConfig { get; } = new();
+        public Dictionary<string, string> LocalConfig { get; } = new();
+
+        public Task<string?> GetGitConfigValueAsync(string repoPath, string key, bool global)
+        {
+            var store = global ? GlobalConfig : LocalConfig;
+            return Task.FromResult(store.TryGetValue(key, out var value) ? value : null);
+        }
+
+        public Task<(bool Success, string Output)> SetGitConfigValueAsync(string repoPath, string key, string value, bool global)
+        {
+            (global ? GlobalConfig : LocalConfig)[key] = value;
+            return Task.FromResult((true, ""));
+        }
+
+        public Task<(bool Success, string Output)> UnsetLocalGitConfigValueAsync(string repoPath, string key)
+        {
+            LocalConfig.Remove(key);
+            return Task.FromResult((true, ""));
+        }
         public Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null)
         {
             StashCount++;
@@ -237,34 +258,29 @@ namespace Girt.Tests
             var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, v => savedValues.Add(v), (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
 
-            // Folders (in first-seen order) come first, each followed by its branches
-            // indented one level deeper; branches with no '/' are plain leaves at depth 0.
-            Assert.Equal(7, vm.LocalBranchTree.Count);
+            // Root items (in first-seen order): "feature" and "bugfix" folders, each owning
+            // their branches as real Children, then the root-level leaves "main" and "develop".
+            Assert.Equal(4, vm.LocalBranchTree.Count);
 
-            Assert.True(vm.LocalBranchTree[0].IsFolder);
-            Assert.Equal("feature", vm.LocalBranchTree[0].DisplayName);
-            Assert.Equal(0, vm.LocalBranchTree[0].Depth);
+            var featureFolder = vm.LocalBranchTree[0];
+            Assert.True(featureFolder.IsFolder);
+            Assert.Equal("feature", featureFolder.DisplayName);
+            Assert.Equal(2, featureFolder.Children.Count);
+            Assert.Equal("BB-100-foo", featureFolder.Children[0].DisplayName);
+            Assert.Equal("feature/BB-100-foo", featureFolder.Children[0].Branch?.Name);
+            Assert.Equal("BB-200-bar", featureFolder.Children[1].DisplayName);
 
-            Assert.False(vm.LocalBranchTree[1].IsFolder);
-            Assert.Equal("BB-100-foo", vm.LocalBranchTree[1].DisplayName);
-            Assert.Equal(1, vm.LocalBranchTree[1].Depth);
-            Assert.Equal("feature/BB-100-foo", vm.LocalBranchTree[1].Branch?.Name);
+            var bugfixFolder = vm.LocalBranchTree[1];
+            Assert.True(bugfixFolder.IsFolder);
+            Assert.Equal("bugfix", bugfixFolder.DisplayName);
+            Assert.Single(bugfixFolder.Children);
+            Assert.Equal("BB-300-baz", bugfixFolder.Children[0].DisplayName);
 
             Assert.False(vm.LocalBranchTree[2].IsFolder);
-            Assert.Equal("BB-200-bar", vm.LocalBranchTree[2].DisplayName);
+            Assert.Equal("main", vm.LocalBranchTree[2].DisplayName);
 
-            Assert.True(vm.LocalBranchTree[3].IsFolder);
-            Assert.Equal("bugfix", vm.LocalBranchTree[3].DisplayName);
-
-            Assert.False(vm.LocalBranchTree[4].IsFolder);
-            Assert.Equal("BB-300-baz", vm.LocalBranchTree[4].DisplayName);
-
-            Assert.False(vm.LocalBranchTree[5].IsFolder);
-            Assert.Equal("main", vm.LocalBranchTree[5].DisplayName);
-            Assert.Equal(0, vm.LocalBranchTree[5].Depth);
-
-            Assert.False(vm.LocalBranchTree[6].IsFolder);
-            Assert.Equal("develop", vm.LocalBranchTree[6].DisplayName);
+            Assert.False(vm.LocalBranchTree[3].IsFolder);
+            Assert.Equal("develop", vm.LocalBranchTree[3].DisplayName);
 
             // Toggling back to flat mode persists the change and empties the tree.
             vm.GroupBranchesIntoFolders = false;
@@ -274,7 +290,7 @@ namespace Girt.Tests
         }
 
         [Fact]
-        public async Task BranchListViewModel_TogglePinBranch_MovesToTopOfFlatListAndIntoPinnedFolder()
+        public async Task BranchListViewModel_TogglePinBranch_MovesToTopOfFlatListAndTreeRoot()
         {
             var fakeGit = new FakeGitService
             {
@@ -310,20 +326,24 @@ namespace Girt.Tests
             Assert.Equal(@"C:\FakeRepo", savedRepoPaths.Last());
             Assert.Contains("bugfix/BB-300-baz", savedPinnedSets.Last());
 
-            // A synthetic "Pinned" folder appears first in the tree, in addition to (not
-            // instead of) the branch's normal folder position.
-            var pinnedFolder = vm.LocalBranchTree[0];
-            Assert.True(pinnedFolder.IsFolder);
-            Assert.Equal("Pinned", pinnedFolder.DisplayName);
-            var pinnedLeaf = vm.LocalBranchTree[1];
+            // In the tree, the pinned branch floats to the very top as a plain leaf (full
+            // DisplayName, since there's no folder context) - no synthetic "Pinned" folder.
+            var pinnedLeaf = vm.LocalBranchTree[0];
             Assert.False(pinnedLeaf.IsFolder);
+            Assert.Equal("bugfix/BB-300-baz", pinnedLeaf.DisplayName);
             Assert.Equal("bugfix/BB-300-baz", pinnedLeaf.Branch?.Name);
-            Assert.Contains(vm.LocalBranchTree, i => !i.IsFolder && i.DisplayName == "BB-300-baz" && i.Branch?.Name == "bugfix/BB-300-baz");
 
-            // Unpinning removes it from the top and from the Pinned folder.
+            // It's a move, not a duplicate - "bugfix" had only this one branch, so with it
+            // pinned away the folder itself no longer exists at all.
+            Assert.DoesNotContain(vm.LocalBranchTree, i => i.IsFolder && i.DisplayName == "bugfix");
+
+            // Unpinning removes it from the top of both the flat list and the tree, and
+            // restores it to its normal folder position.
             vm.TogglePinBranchCommand.Execute(target);
             Assert.False(vm.FilteredLocalBranches.First(b => b.Name == "bugfix/BB-300-baz").IsPinned);
-            Assert.DoesNotContain(vm.LocalBranchTree, i => i.IsFolder && i.DisplayName == "Pinned");
+            Assert.DoesNotContain(vm.LocalBranchTree, i => !i.IsFolder && i.Branch?.Name == "bugfix/BB-300-baz");
+            var bugfixFolderAfterUnpin = vm.LocalBranchTree.Single(i => i.IsFolder && i.DisplayName == "bugfix");
+            Assert.Contains(bugfixFolderAfterUnpin.Children, i => i.Branch?.Name == "bugfix/BB-300-baz");
         }
 
         [Fact]
@@ -361,8 +381,13 @@ namespace Girt.Tests
         }
 
         [Fact]
-        public async Task BranchListViewModel_ToggleBranchFolder_CollapsesAndExpandsJustThatFolder()
+        public async Task BranchListViewModel_FolderExpandState_PersistsAcrossTreeRebuild()
         {
+            // Expand/collapse itself is now handled entirely by the WPF TreeView (its
+            // TreeViewItem.IsExpanded is two-way bound to BranchTreeItem.IsExpanded) - there's
+            // no ViewModel command for it any more. What the ViewModel still owns is carrying
+            // that expand state across a rebuild (filter/pin/reload), since the old node
+            // instances are discarded and rebuilt from scratch each time.
             var fakeGit = new FakeGitService
             {
                 Branches = new List<GitBranch>
@@ -377,28 +402,24 @@ namespace Girt.Tests
             var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
 
-            // Fully expanded: 2 folders + 4 leaves (2 under feature, 1 under bugfix, 1 root-level).
-            Assert.Equal(6, vm.LocalBranchTree.Count);
+            Assert.Equal(3, vm.LocalBranchTree.Count); // feature, bugfix, main
             var featureFolder = vm.LocalBranchTree[0];
-            Assert.True(featureFolder.IsFolder);
             Assert.Equal("feature", featureFolder.DisplayName);
-            Assert.False(featureFolder.IsCollapsed);
+            Assert.True(featureFolder.IsExpanded); // Expanded by default.
 
-            // Collapsing "feature" hides its 2 branches but leaves "bugfix" and "main" alone,
-            // and the folder row itself stays visible (just marked collapsed).
-            vm.ToggleLocalBranchFolder(featureFolder);
-            Assert.Equal(4, vm.LocalBranchTree.Count);
-            Assert.True(vm.LocalBranchTree[0].IsFolder);
-            Assert.Equal("feature", vm.LocalBranchTree[0].DisplayName);
-            Assert.True(vm.LocalBranchTree[0].IsCollapsed);
-            Assert.True(vm.LocalBranchTree[1].IsFolder);
-            Assert.Equal("bugfix", vm.LocalBranchTree[1].DisplayName);
-            Assert.False(vm.LocalBranchTree[1].IsCollapsed);
+            // Simulate the user collapsing it (what TreeViewItem's two-way binding would do),
+            // then force a rebuild the same way a filter-text change or pin toggle would.
+            featureFolder.IsExpanded = false;
+            vm.ApplyFilter();
 
-            // Toggling the same folder path again re-expands it.
-            vm.ToggleLocalBranchFolder(vm.LocalBranchTree[0]);
-            Assert.Equal(6, vm.LocalBranchTree.Count);
-            Assert.False(vm.LocalBranchTree[0].IsCollapsed);
+            var rebuiltFeatureFolder = vm.LocalBranchTree.Single(i => i.DisplayName == "feature");
+            Assert.False(rebuiltFeatureFolder.IsExpanded);
+            Assert.Equal(2, rebuiltFeatureFolder.Children.Count); // Children are unaffected - still present, just not shown.
+
+            // Re-expanding and rebuilding again round-trips back to true.
+            rebuiltFeatureFolder.IsExpanded = true;
+            vm.ApplyFilter();
+            Assert.True(vm.LocalBranchTree.Single(i => i.DisplayName == "feature").IsExpanded);
         }
 
         [Fact]
@@ -1102,6 +1123,66 @@ namespace Girt.Tests
             mainVm.RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, BehindCount = 3 };
             await mainVm.PullAsync();
             Assert.False(mainVm.IsPullChoiceDialogOpen);
+        }
+
+        [Fact]
+        public void SettingsViewModel_TogglesPersistViaInjectedSavers()
+        {
+            var savedMinimizeToTray = new List<bool>();
+            var savedMinimizeOnClose = new List<bool>();
+            var savedFolderClickMode = new List<bool>();
+
+            var vm = new SettingsViewModel(
+                new FakeGitService(), () => @"C:\FakeRepo",
+                true, v => savedMinimizeToTray.Add(v),
+                false, v => savedMinimizeOnClose.Add(v),
+                true, v => savedFolderClickMode.Add(v));
+
+            // Initial values come from the injected loaders, with no save triggered yet.
+            Assert.True(vm.MinimizeToTray);
+            Assert.False(vm.MinimizeOnClose);
+            Assert.True(vm.FolderExpandOnSingleClick);
+            Assert.Empty(savedMinimizeToTray);
+
+            vm.MinimizeToTray = false;
+            vm.MinimizeOnClose = true;
+            vm.FolderExpandOnSingleClick = false;
+
+            Assert.Equal(new[] { false }, savedMinimizeToTray);
+            Assert.Equal(new[] { true }, savedMinimizeOnClose);
+            Assert.Equal(new[] { false }, savedFolderClickMode);
+        }
+
+        [Fact]
+        public async Task SettingsViewModel_GitIdentity_LoadsGlobalAndDetectsLocalOverride()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.GlobalConfig["user.name"] = "Global Name";
+            fakeGit.GlobalConfig["user.email"] = "global@example.com";
+
+            var vm = new SettingsViewModel(fakeGit, () => @"C:\FakeRepo", true, _ => { }, true, _ => { }, true, _ => { });
+            await vm.LoadGitIdentityAsync();
+
+            Assert.Equal("Global Name", vm.GlobalUserName);
+            Assert.Equal("global@example.com", vm.GlobalUserEmail);
+            Assert.False(vm.HasLocalIdentityOverride);
+
+            // Saving a repo-local override doesn't touch the global config, and is detected as
+            // an override on the next load.
+            vm.LocalUserName = "Repo Name";
+            vm.LocalUserEmail = "repo@example.com";
+            await vm.SaveLocalIdentityOverrideCommand.ExecuteAsync(null);
+            Assert.True(vm.HasLocalIdentityOverride);
+            Assert.Equal("Global Name", fakeGit.GlobalConfig["user.name"]); // Unchanged.
+
+            await vm.LoadGitIdentityAsync();
+            Assert.True(vm.HasLocalIdentityOverride);
+            Assert.Equal("Repo Name", vm.LocalUserName);
+
+            // Removing it clears the local config and falls back to reporting no override.
+            await vm.RemoveLocalIdentityOverrideCommand.ExecuteAsync(null);
+            Assert.False(vm.HasLocalIdentityOverride);
+            Assert.DoesNotContain("user.name", fakeGit.LocalConfig.Keys);
         }
     }
 }

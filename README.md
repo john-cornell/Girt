@@ -1,4 +1,8 @@
-# Girt 🌿
+<p align="center">
+  <img src="src/Girt/Assets/app_icon.png" width="128" alt="Girt icon" />
+</p>
+
+<h1 align="center">Girt</h1>
 
 **Girt** is a lightning-fast, modern Git client for Windows built with .NET 8, WPF, and CommunityToolkit.MVVM. It delivers high-performance commit graph visualization, smart branch association tracking, unified diff inspection, and streamlined staging with code-signed installer distribution.
 
@@ -89,4 +93,4 @@ dotnet test
 ---
 
 ## 📄 License
-MIT License.
+[Hippocratic License 3.0](LICENSE) — do what you want with it, just don't use it to violate human rights, exploit workers, or harm the environment.

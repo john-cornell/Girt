@@ -100,10 +100,45 @@ it sees an external change: full silent refresh if on, pills-only if off. It has
 what happens after the user's own actions (commit, stage, etc.) — those always follow rule 5,
 regardless of `AutoRefresh`.
 
+## 9. Rebuilding a *root-level* collection with `Clear()`+`ReAdd()` is fine
+
+Rule 2 is about virtualized lists with many visible rows. `BranchListViewModel.RebuildBranchTree`
+(the folder-grouped branch `TreeView`'s data source) still does `target.Clear()` + re-add on every
+filter/pin/reload — but only at the **root** level (a handful of top folders/branches), never the
+full depth of the tree. Nested `BranchTreeItem.Children` collections are never cleared/rebuilt in
+place; each rebuild constructs entirely new child collections from scratch and swaps them in via
+the root Add, so already-rendered nested `TreeViewItem`s for *unaffected* subtrees just get GC'd
+and regenerated - there's no live nested collection getting a spurious `Reset`. If you find
+yourself wanting to `Clear()` a large or deeply-nested collection, that's the rule-2 case; a small
+root-level list is not.
+
+## 10. `TreeView.IsExpanded` must be explicitly bound in `ItemContainerStyle`
+
+`BranchTreeViewItemStyle` sets `Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"`
+on the `TreeViewItem` itself. This was missing in an early version of this style: the custom
+expander `ToggleButton` inside the `ControlTemplate` bound to `{RelativeSource TemplatedParent},
+Path=IsExpanded` (i.e. the *container's* `IsExpanded`), which visually worked (rows expanded and
+collapsed fine) but silently never round-tripped to the underlying `BranchTreeItem.IsExpanded`
+data property - so `RebuildBranchTree`'s expand-state snapshot/restore across rebuilds was
+reading a value that never changed. If you re-template `TreeViewItem` again, keep the
+`ItemContainerStyle` Setter as the single place `IsExpanded` reaches the data model; don't rely on
+the template's internal toggle alone.
+
+## 11. Settings that both a dialog and other code (tray icon, window chrome) touch need one
+owner
+
+`SettingsViewModel.MinimizeToTray`/`MinimizeOnClose` are the single source of truth for both the
+Settings dialog and the tray icon's own context menu checkboxes - `MainWindow.xaml.cs` no longer
+keeps its own `_minimizeToTray`/`_minimizeOnClose` fields, it reads `_viewModel.Settings.*`
+directly and subscribes to `Settings.PropertyChanged` to keep the Forms tray menu's `.Checked`
+in sync when the Settings dialog changes it. If a setting is editable from more than one place in
+the UI, route both through the same ViewModel property rather than letting each surface keep its
+own copy - that's exactly the class of bug rule 6 covers, just for settings instead of counts.
+
 ---
 
 **Before shipping a change to any of the files above:** rebuild, run the full test suite (currently
-41 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
+44 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
 lock in correctness, not perceived speed. If you introduce a `Clear()` on a virtualized list's
 bound collection, a `RefreshRepositoryAsync()` call after a fast local action, or drop a
 `ConfigureAwait(false)` from `GitCliService`, you are reintroducing a bug that was deliberately

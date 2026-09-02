@@ -26,7 +26,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.4.27";
+        public const string AppVersion = "0.4.31";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -125,6 +125,10 @@ namespace Girt.ViewModels
         public CommitDetailViewModel CommitDetail { get; }
         public WorkingChangesViewModel WorkingChanges { get; }
         public UnpushedChangesViewModel UnpushedChanges { get; }
+        public SettingsViewModel Settings { get; }
+
+        [ObservableProperty]
+        private bool _isSettingsDialogOpen;
 
         public ObservableCollection<string> RecentRepositories { get; } = new();
 
@@ -159,6 +163,15 @@ namespace Girt.ViewModels
                 OnWorkingChangesUpdatedAsync,
                 _themeService.LoadPushAfterCommit(),
                 _themeService.SavePushAfterCommit);
+            Settings = new SettingsViewModel(
+                _gitService,
+                () => RepositoryPath,
+                _themeService.LoadMinimizeToTray(),
+                _themeService.SaveMinimizeToTray,
+                _themeService.LoadMinimizeOnClose(),
+                _themeService.SaveMinimizeOnClose,
+                _themeService.LoadFolderExpandOnSingleClick(),
+                _themeService.SaveFolderExpandOnSingleClick);
 
             _pushPillOpensReview = _themeService.LoadPushPillOpensReview();
             _autoRefresh = _themeService.LoadAutoRefresh();
@@ -683,6 +696,19 @@ namespace Girt.ViewModels
             _themeService.ToggleTheme();
         }
 
+        [RelayCommand]
+        public async Task OpenSettingsAsync()
+        {
+            IsSettingsDialogOpen = true;
+            await Settings.LoadGitIdentityAsync();
+        }
+
+        [RelayCommand]
+        public void CloseSettingsDialog()
+        {
+            IsSettingsDialogOpen = false;
+        }
+
         // ================= CLIPBOARD COPY COMMANDS =================
 
         // The Windows clipboard is a single shared, cross-process resource: any other app
@@ -699,9 +725,17 @@ namespace Girt.ViewModels
                     Clipboard.SetText(text);
                     return true;
                 }
-                catch (COMException) when (attempt < maxAttempts)
+                catch (COMException)
                 {
-                    Thread.Sleep(50);
+                    // The `when (attempt < maxAttempts)` guard this used to have meant the final
+                    // attempt's exception wasn't caught at all - it escaped straight to WPF's
+                    // global unhandled-exception handler as a crash dialog, instead of falling
+                    // through to the graceful `return false` below. Catch every attempt; only
+                    // skip the sleep on the last one since there's nothing left to wait for.
+                    if (attempt < maxAttempts)
+                    {
+                        Thread.Sleep(50);
+                    }
                 }
             }
 

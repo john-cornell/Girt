@@ -169,6 +169,90 @@
         </Setter>
     </Style>
 
+    <!-- Folder-grouped branch tree: a real TreeView row (native expand/collapse chevron,
+         indentation handled by nesting rather than a hand-computed Depth+margin), styled to
+         match BranchListBoxItemStyle's hover/selection look above. -->
+    <Style TargetType="{x:Type TreeViewItem}" x:Key="BranchTreeViewItemStyle">
+        <Setter Property="Padding" Value="4,3" />
+        <Setter Property="Cursor" Value="Hand" />
+        <!-- Two-way so the chevron and the row-click toggle (see OnBranchFolderRowMouseDown)
+             both round-trip into BranchTreeItem.IsExpanded, which is what gets read back out
+             when the tree rebuilds (see BranchListViewModel.SnapshotExpandState) - without this,
+             TreeViewItem.IsExpanded was only ever a transient, per-container UI value that never
+             reached the data model, so expand state silently didn't survive a rebuild. -->
+        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type TreeViewItem}">
+                    <StackPanel>
+                        <Border x:Name="RowBorder"
+                                Background="Transparent"
+                                CornerRadius="5"
+                                Margin="0,1"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <ToggleButton x:Name="Expander"
+                                              Grid.Column="0"
+                                              Width="16" Height="16"
+                                              Focusable="False"
+                                              ClickMode="Press"
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="Transparent">
+                                                <TextBlock x:Name="Glyph"
+                                                           Text="&#9656;"
+                                                           FontSize="10"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Glyph" Property="Text" Value="&#9662;" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+
+                                <ContentPresenter x:Name="PART_Header"
+                                                  Grid.Column="1"
+                                                  ContentSource="Header"
+                                                  HorizontalAlignment="Stretch"
+                                                  VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+
+                        <!-- Children indent under their folder via nested-Border margin rather
+                             than a per-item Depth value - each level only knows its own offset. -->
+                        <ItemsPresenter x:Name="ItemsHost" Margin="16,0,0,0" />
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="HasItems" Value="False">
+                            <Setter TargetName="Expander" Property="Visibility" Value="Hidden" />
+                        </Trigger>
+                        <Trigger Property="IsExpanded" Value="False">
+                            <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed" />
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource HoverBackgroundBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource SelectedBackgroundBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Slim Modern ScrollBar -->
     <Style TargetType="{x:Type ScrollBar}">
         <Setter Property="Width" Value="8" />

@@ -8,9 +8,9 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets\app_icon.ico</ApplicationIcon>
-    <Version>0.4.27</Version>
-    <AssemblyVersion>0.4.27.0</AssemblyVersion>
-    <FileVersion>0.4.27.0</FileVersion>
+    <Version>0.4.31</Version>
+    <AssemblyVersion>0.4.31.0</AssemblyVersion>
+    <FileVersion>0.4.31.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,7 +28,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\**\*" />
+    <Resource Include="Assets\**\*" Exclude="Assets\splash.png" />
+    <!-- SplashScreen is a native WPF build action: the image shows immediately (before
+         MainWindow even finishes constructing) as a borderless, alpha-shaped window, then
+         fades out automatically once the main window is ready - no custom window/code needed. -->
+    <SplashScreen Include="Assets\splash.png" />
   </ItemGroup>
 
 </Project>

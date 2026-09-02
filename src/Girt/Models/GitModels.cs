@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 
 namespace Girt.Models
 {
@@ -113,19 +114,21 @@ namespace Girt.Models
             : Name;
     }
 
-    /// <summary>One row of a branch list grouped into folders by '/' in the branch name -
-    /// either a folder header (no Branch) or a leaf branch, indented by Depth.</summary>
+    /// <summary>One node of a branch list grouped into folders by '/' in the branch name -
+    /// either a folder header (no Branch, has Children) or a leaf branch (no Children). Bound
+    /// to a real WPF TreeView via HierarchicalDataTemplate, so indentation/connector lines/
+    /// expand-collapse chevrons come from the TreeView itself instead of being hand-computed.</summary>
     public class BranchTreeItem
     {
         public bool IsFolder { get; set; }
         public string DisplayName { get; set; } = string.Empty;
-        public int Depth { get; set; }
         public GitBranch? Branch { get; set; }
+        public ObservableCollection<BranchTreeItem> Children { get; } = new();
 
         /// <summary>Folder rows only: full path from the tree root (e.g. "feature/BB-100"),
-        /// used as the stable key for remembering which folders are collapsed.</summary>
+        /// used as the stable key for remembering expand state across tree rebuilds.</summary>
         public string FolderPath { get; set; } = string.Empty;
-        public bool IsCollapsed { get; set; }
+        public bool IsExpanded { get; set; } = true;
 
         /// <summary>Whether the Checkout button should show for this row - leaf branches only,
         /// and not the branch that's already checked out.</summary>

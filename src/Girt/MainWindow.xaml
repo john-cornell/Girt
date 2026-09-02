@@ -20,7 +20,6 @@
         <converters:NullToVisibilityConverter x:Key="NullToVisConverter" />
         <converters:BoolToVisibilityConverter x:Key="BoolToVisConverter" />
         <converters:HexToBrushConverter x:Key="HexToBrushConverter" />
-        <converters:DepthToIndentConverter x:Key="DepthToIndentConverter" />
         <converters:BranchPinToggleLabelConverter x:Key="BranchPinToggleLabelConverter" />
         <converters:PushModeGlyphConverter x:Key="PushModeGlyphConverter" />
         <converters:PushModeTooltipConverter x:Key="PushModeTooltipConverter" />
@@ -295,7 +294,13 @@
                     <Button Content="🌓 Theme"
                             Style="{StaticResource ToolButtonStyle}"
                             Command="{Binding ToggleThemeCommand}"
+                            Margin="0,0,6,0"
                             ToolTip="Toggle Light / Dark mode (persisted automatically)" />
+
+                    <Button Content="⚙ Settings"
+                            Style="{StaticResource ToolButtonStyle}"
+                            Command="{Binding OpenSettingsCommand}"
+                            ToolTip="Settings: minimize behavior, branch tree click mode, git identity" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -578,16 +583,19 @@
                                     </ListBox.ItemTemplate>
                                 </ListBox>
 
-                                <!-- Grouped-into-folders presentation of the same local branches -->
-                                <ListBox ItemsSource="{Binding BranchList.LocalBranchTree}"
-                                         Style="{StaticResource ModernListBoxStyle}"
-                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
-                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
-                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate DataType="{x:Type models:BranchTreeItem}">
-                                            <Grid Margin="{Binding Depth, Converter={StaticResource DepthToIndentConverter}}">
+                                <!-- Grouped-into-folders presentation of the same local branches - a real
+                                     TreeView (native expand/collapse chevron via BranchTreeViewItemStyle,
+                                     indentation from nesting rather than a hand-computed Depth+margin). -->
+                                <TreeView ItemsSource="{Binding BranchList.LocalBranchTree}"
+                                          Background="Transparent"
+                                          BorderThickness="0"
+                                          ItemContainerStyle="{StaticResource BranchTreeViewItemStyle}"
+                                          PreviewMouseWheel="OnBranchListPreviewMouseWheel"
+                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
+                                    <TreeView.ItemTemplate>
+                                        <HierarchicalDataTemplate DataType="{x:Type models:BranchTreeItem}" ItemsSource="{Binding Children}">
+                                            <Grid Margin="2,0">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="*" />
@@ -629,30 +637,17 @@
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
-                                                <!-- Folder row: click to collapse/expand its contents -->
-                                                <Button Grid.Column="0" Grid.ColumnSpan="2"
-                                                        Style="{StaticResource ToolButtonStyle}"
-                                                        HorizontalContentAlignment="Left"
-                                                        Command="{Binding DataContext.BranchList.ToggleLocalBranchFolderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                        CommandParameter="{Binding}"
-                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <TextBlock FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Setter Property="Text" Value="▾" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
-                                                                            <Setter Property="Text" Value="▸" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
-                                                        <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
-                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                                    </StackPanel>
-                                                </Button>
+                                                <!-- Folder icon/name. The chevron (BranchTreeViewItemStyle's Expander)
+                                                     always toggles on one click; clicking this row body toggles on
+                                                     either one or two clicks per Settings > "Expand folders on". -->
+                                                <StackPanel Grid.Column="0" Grid.ColumnSpan="2"
+                                                            Orientation="Horizontal"
+                                                            Background="Transparent"
+                                                            MouseLeftButtonDown="OnBranchFolderRowMouseDown"
+                                                            Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
+                                                    <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                </StackPanel>
 
                                                 <!-- Active-head / pinned indicator (leaf branches only). FallbackValue matters here:
                                                      on a folder row, Branch is null, so Branch.IsCurrent/IsPinned can't be evaluated
@@ -690,9 +685,9 @@
                                                         CommandParameter="{Binding Branch}"
                                                         Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                             </Grid>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
+                                        </HierarchicalDataTemplate>
+                                    </TreeView.ItemTemplate>
+                                </TreeView>
                               </Grid>
                             </Expander>
 
@@ -823,15 +818,16 @@
                                 </ListBox>
 
                                 <!-- Grouped-into-folders presentation of the same remote branches -->
-                                <ListBox ItemsSource="{Binding BranchList.RemoteBranchTree}"
-                                         Style="{StaticResource ModernListBoxStyle}"
-                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
-                                         MouseDoubleClick="OnLocalBranchDoubleClicked"
-                                         Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate DataType="{x:Type models:BranchTreeItem}">
-                                            <Grid Margin="{Binding Depth, Converter={StaticResource DepthToIndentConverter}}">
+                                <TreeView ItemsSource="{Binding BranchList.RemoteBranchTree}"
+                                          Background="Transparent"
+                                          BorderThickness="0"
+                                          ItemContainerStyle="{StaticResource BranchTreeViewItemStyle}"
+                                          PreviewMouseWheel="OnBranchListPreviewMouseWheel"
+                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
+                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
+                                    <TreeView.ItemTemplate>
+                                        <HierarchicalDataTemplate DataType="{x:Type models:BranchTreeItem}" ItemsSource="{Binding Children}">
+                                            <Grid Margin="2,0">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="*" />
@@ -868,30 +864,17 @@
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
-                                                <!-- Folder row: click to collapse/expand its contents -->
-                                                <Button Grid.Column="0" Grid.ColumnSpan="2"
-                                                        Style="{StaticResource ToolButtonStyle}"
-                                                        HorizontalContentAlignment="Left"
-                                                        Command="{Binding DataContext.BranchList.ToggleRemoteBranchFolderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                        CommandParameter="{Binding}"
-                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <TextBlock FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Setter Property="Text" Value="▾" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
-                                                                            <Setter Property="Text" Value="▸" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
-                                                        <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
-                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                                    </StackPanel>
-                                                </Button>
+                                                <!-- Folder icon/name. The chevron (BranchTreeViewItemStyle's Expander)
+                                                     always toggles on one click; clicking this row body toggles on
+                                                     either one or two clicks per Settings > "Expand folders on". -->
+                                                <StackPanel Grid.Column="0" Grid.ColumnSpan="2"
+                                                            Orientation="Horizontal"
+                                                            Background="Transparent"
+                                                            MouseLeftButtonDown="OnBranchFolderRowMouseDown"
+                                                            Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
+                                                    <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                </StackPanel>
 
                                                 <!-- Pinned indicator (leaf branches only) - FallbackValue matters here, same reason
                                                      as the local branch tree's active-head/pinned indicator above. -->
@@ -917,9 +900,9 @@
                                                         CommandParameter="{Binding Branch}"
                                                         Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                             </Grid>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
+                                        </HierarchicalDataTemplate>
+                                    </TreeView.ItemTemplate>
+                                </TreeView>
                               </Grid>
                             </Expander>
                         </StackPanel>
@@ -1295,13 +1278,14 @@
                                               Command="{Binding CommitDetail.AddToGitIgnoreCommand}"
                                               CommandParameter="{Binding CommitDetail.SelectedFile}" />
                                     <MenuItem Header="Add folder to .gitignore"
-                                              ItemsSource="{Binding CommitDetail.SelectedFile.AncestorFolders}"
-                                              Tag="{Binding CommitDetail.IgnoreFolderCommand}">
+                                              ItemsSource="{Binding CommitDetail.SelectedFile.AncestorFolders}">
+                                        <!-- Command+RelativeSource across a submenu popup boundary has proven unreliable
+                                             elsewhere in this app (see OnTogglePinBranchClicked) - resolve via a code-behind
+                                             Click handler off the clicked item's own DataContext (the folder path) instead. -->
                                         <MenuItem.ItemContainerStyle>
                                             <Style TargetType="MenuItem">
                                                 <Setter Property="Header" Value="{Binding}" />
-                                                <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
-                                                <Setter Property="CommandParameter" Value="{Binding}" />
+                                                <EventSetter Event="Click" Handler="OnIgnoreFolderInCommitDetailClicked" />
                                             </Style>
                                         </MenuItem.ItemContainerStyle>
                                     </MenuItem>
@@ -1476,13 +1460,11 @@
                                                       Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
                                             <MenuItem Header="Add folder to .gitignore"
-                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}"
-                                                      Tag="{Binding WorkingChanges.IgnoreFolderCommand}">
+                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}">
                                                 <MenuItem.ItemContainerStyle>
                                                     <Style TargetType="MenuItem">
                                                         <Setter Property="Header" Value="{Binding}" />
-                                                        <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
-                                                        <Setter Property="CommandParameter" Value="{Binding}" />
+                                                        <EventSetter Event="Click" Handler="OnIgnoreFolderInWorkingChangesClicked" />
                                                     </Style>
                                                 </MenuItem.ItemContainerStyle>
                                             </MenuItem>
@@ -1609,13 +1591,11 @@
                                                       Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
                                             <MenuItem Header="Add folder to .gitignore"
-                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}"
-                                                      Tag="{Binding WorkingChanges.IgnoreFolderCommand}">
+                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}">
                                                 <MenuItem.ItemContainerStyle>
                                                     <Style TargetType="MenuItem">
                                                         <Setter Property="Header" Value="{Binding}" />
-                                                        <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
-                                                        <Setter Property="CommandParameter" Value="{Binding}" />
+                                                        <EventSetter Event="Click" Handler="OnIgnoreFolderInWorkingChangesClicked" />
                                                     </Style>
                                                 </MenuItem.ItemContainerStyle>
                                             </MenuItem>
@@ -2178,6 +2158,137 @@
                                 Command="{Binding CancelPullChoiceDialogCommand}" />
                     </StackPanel>
                 </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: SETTINGS -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsSettingsDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="480"
+                    MaxHeight="640"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="⚙ Settings"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,14" />
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="GENERAL" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                            <CheckBox Content="Minimize to tray"
+                                      IsChecked="{Binding Settings.MinimizeToTray}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,6"
+                                      ToolTip="When the window is minimized, drop it into the notification area tray icon instead of the taskbar." />
+                            <CheckBox Content="Minimize on close (instead of exiting)"
+                                      IsChecked="{Binding Settings.MinimizeOnClose}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,6"
+                                      ToolTip="Clicking the window's close (X) button hides to tray instead of exiting Girt. Exit fully from the tray icon's context menu." />
+                            <CheckBox Content="Auto-refresh when .git changes externally"
+                                      IsChecked="{Binding AutoRefresh}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,6"
+                                      ToolTip="Same toggle as the 'Auto' checkbox in the toolbar. When off, only the status pills update on external changes; use F5 to refresh fully." />
+
+                            <TextBlock Text="BRANCH TREE" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
+                            <CheckBox Content="Expand/collapse folders with a single click (uncheck for double-click)"
+                                      IsChecked="{Binding Settings.FolderExpandOnSingleClick}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,6"
+                                      ToolTip="The small chevron next to a folder always toggles on one click regardless of this setting - this only controls clicking the folder row itself." />
+
+                            <TextBlock Text="GIT IDENTITY" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
+
+                            <TextBlock Text="Global (used everywhere unless a repository overrides it)"
+                                       FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Margin="0,0,4,0" Padding="6,4"
+                                         Text="{Binding Settings.GlobalUserName, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="{DynamicResource CardBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}"
+                                         Tag="Name" />
+                                <TextBox Grid.Column="1" Margin="4,0,0,0" Padding="6,4"
+                                         Text="{Binding Settings.GlobalUserEmail, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="{DynamicResource CardBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}"
+                                         Tag="Email" />
+                            </Grid>
+                            <Button Content="Save Global Identity"
+                                    Style="{StaticResource ToolButtonStyle}"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,0,0,14"
+                                    Command="{Binding Settings.SaveGlobalIdentityCommand}" />
+
+                            <TextBlock Text="This repository"
+                                       FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Margin="0,0,4,0" Padding="6,4"
+                                         Text="{Binding Settings.LocalUserName, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="{DynamicResource CardBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}" />
+                                <TextBox Grid.Column="1" Margin="4,0,0,0" Padding="6,4"
+                                         Text="{Binding Settings.LocalUserEmail, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="{DynamicResource CardBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}" />
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <Button Content="Save Override for This Repo"
+                                        Style="{StaticResource ToolButtonStyle}"
+                                        Margin="0,0,6,0"
+                                        Command="{Binding Settings.SaveLocalIdentityOverrideCommand}" />
+                                <Button Content="Remove Override"
+                                        Style="{StaticResource ToolButtonStyle}"
+                                        Command="{Binding Settings.RemoveLocalIdentityOverrideCommand}"
+                                        Visibility="{Binding Settings.HasLocalIdentityOverride, Converter={StaticResource BoolToVisConverter}}" />
+                            </StackPanel>
+
+                            <TextBlock Text="{Binding Settings.IdentityStatusMessage}"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextAccentBrush}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding Settings.IdentityStatusMessage, Converter={StaticResource NullToVisConverter}}" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                        <Button Content="Done"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CloseSettingsDialogCommand}" />
+                    </StackPanel>
+                </Grid>
             </Border>
         </Grid>
 

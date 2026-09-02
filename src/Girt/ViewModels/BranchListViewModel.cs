@@ -44,14 +44,6 @@ namespace Girt.ViewModels
         private List<GitBranch> _allRemoteBranches = new();
         private HashSet<string> _knownBranchNames = new(StringComparer.OrdinalIgnoreCase);
         private string? _lastRepoPath;
-        private readonly HashSet<string> _collapsedLocalFolders = new(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> _collapsedRemoteFolders = new(StringComparer.OrdinalIgnoreCase);
-
-        // The branch->folder grouping itself only changes when branches load or the search
-        // text changes; a folder collapse/expand click just re-flattens these cached trees
-        // instead of re-grouping every branch from scratch (that was the source of the lag).
-        private BranchFolderNode? _localTreeRoot;
-        private BranchFolderNode? _remoteTreeRoot;
 
         public List<GitBranch> AllBranches { get; private set; } = new();
         public ObservableCollection<GitBranch> FilteredLocalBranches { get; } = new();
@@ -66,8 +58,6 @@ namespace Girt.ViewModels
         private readonly Func<string, HashSet<string>> _loadPinnedBranches;
         private readonly Action<string, IEnumerable<string>> _savePinnedBranches;
         private HashSet<string> _pinnedBranchNames = new(StringComparer.OrdinalIgnoreCase);
-
-        private const string PinnedFolderName = "Pinned";
 
         public BranchListViewModel(
             IGitService gitService,
@@ -125,22 +115,6 @@ namespace Girt.ViewModels
             GroupBranchesIntoFolders = !GroupBranchesIntoFolders;
         }
 
-        [RelayCommand]
-        public void ToggleLocalBranchFolder(BranchTreeItem? item)
-        {
-            if (item == null || !item.IsFolder) return;
-            if (!_collapsedLocalFolders.Add(item.FolderPath)) _collapsedLocalFolders.Remove(item.FolderPath);
-            RefreshLocalBranchTreeDisplay();
-        }
-
-        [RelayCommand]
-        public void ToggleRemoteBranchFolder(BranchTreeItem? item)
-        {
-            if (item == null || !item.IsFolder) return;
-            if (!_collapsedRemoteFolders.Add(item.FolderPath)) _collapsedRemoteFolders.Remove(item.FolderPath);
-            RefreshRemoteBranchTreeDisplay();
-        }
-
         partial void OnGroupBranchesIntoFoldersChanged(bool value)
         {
             _saveGroupBranchesIntoFolders(value);
@@ -153,8 +127,8 @@ namespace Girt.ViewModels
             }
             else
             {
-                RefreshLocalBranchTreeDisplay();
-                RefreshRemoteBranchTreeDisplay();
+                LocalBranchTree.Clear();
+                RemoteBranchTree.Clear();
             }
         }
 
@@ -320,8 +294,7 @@ namespace Girt.ViewModels
             // the user is looking at the flat list (a fast, hot path for e.g. pinning).
             if (GroupBranchesIntoFolders)
             {
-                _localTreeRoot = BuildBranchFolderTree(localList);
-                RefreshLocalBranchTreeDisplay();
+                RebuildBranchTree(LocalBranchTree, localList);
             }
         }
 
@@ -342,50 +315,84 @@ namespace Girt.ViewModels
 
             if (GroupBranchesIntoFolders)
             {
-                _remoteTreeRoot = BuildBranchFolderTree(remoteList);
-                RefreshRemoteBranchTreeDisplay();
+                RebuildBranchTree(RemoteBranchTree, remoteList);
             }
         }
 
-        private void RefreshLocalBranchTreeDisplay()
+        /// <summary>Rebuilds a real hierarchical tree (folders own their branches via
+        /// BranchTreeItem.Children, consumed by a WPF TreeView's HierarchicalDataTemplate)
+        /// instead of a hand-flattened, hand-indented list. Expand/collapse is handled entirely
+        /// by the TreeView itself (TreeViewItem.IsExpanded two-way bound to BranchTreeItem.
+        /// IsExpanded) - this only needs to carry each folder's expand state across the rebuild,
+        /// since the old tree's node instances are discarded.</summary>
+        private static void RebuildBranchTree(ObservableCollection<BranchTreeItem> target, IReadOnlyList<GitBranch> branches)
         {
-            LocalBranchTree.Clear();
-            if (GroupBranchesIntoFolders && _localTreeRoot != null)
+            var expandState = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            SnapshotExpandState(target, expandState);
+
+            // Pinned branches float to the very top as plain leaves - no synthetic "Pinned"
+            // folder, and no duplicate left behind in their normal folder position (this is a
+            // move, not a shortcut, matching how pinning already behaves in the flat view).
+            var pinned = branches.Where(b => b.IsPinned).ToList();
+            var unpinned = branches.Where(b => !b.IsPinned).ToList();
+            var root = BuildBranchFolderTree(unpinned);
+
+            // Root-level rebuild only - typically a handful of top folders/branches, not the
+            // full (possibly deep) tree, so Clear()+ReAdd() here is cheap and doesn't touch any
+            // already-rendered nested TreeViewItems below the root.
+            target.Clear();
+            foreach (var branch in pinned)
             {
-                foreach (var item in FlattenBranchTree(_localTreeRoot, _collapsedLocalFolders)) LocalBranchTree.Add(item);
+                // Full DisplayName (not just the leaf segment) since there's no folder here to
+                // give it context - "bugfix/BB-300-baz", not just "BB-300-baz".
+                target.Add(new BranchTreeItem { IsFolder = false, DisplayName = branch.DisplayName, Branch = branch });
+            }
+            foreach (var folderName in root.ChildFolderOrder)
+            {
+                target.Add(BuildFolderItem(root.ChildFolders[folderName], folderName, parentPath: "", expandState));
+            }
+            foreach (var (leafName, branch) in root.Leaves)
+            {
+                target.Add(new BranchTreeItem { IsFolder = false, DisplayName = leafName, Branch = branch });
             }
         }
 
-        private void RefreshRemoteBranchTreeDisplay()
+        private static void SnapshotExpandState(IEnumerable<BranchTreeItem> items, Dictionary<string, bool> map)
         {
-            RemoteBranchTree.Clear();
-            if (GroupBranchesIntoFolders && _remoteTreeRoot != null)
+            foreach (var item in items)
             {
-                foreach (var item in FlattenBranchTree(_remoteTreeRoot, _collapsedRemoteFolders)) RemoteBranchTree.Add(item);
+                if (!item.IsFolder) continue;
+                map[item.FolderPath] = item.IsExpanded;
+                SnapshotExpandState(item.Children, map);
             }
+        }
+
+        private static BranchTreeItem BuildFolderItem(BranchFolderNode node, string folderName, string parentPath, IReadOnlyDictionary<string, bool> expandState)
+        {
+            var folderPath = parentPath.Length == 0 ? folderName : $"{parentPath}/{folderName}";
+            var item = new BranchTreeItem
+            {
+                IsFolder = true,
+                DisplayName = folderName,
+                FolderPath = folderPath,
+                IsExpanded = !expandState.TryGetValue(folderPath, out var wasExpanded) || wasExpanded
+            };
+            foreach (var childFolderName in node.ChildFolderOrder)
+            {
+                item.Children.Add(BuildFolderItem(node.ChildFolders[childFolderName], childFolderName, folderPath, expandState));
+            }
+            foreach (var (leafName, branch) in node.Leaves)
+            {
+                item.Children.Add(new BranchTreeItem { IsFolder = false, DisplayName = leafName, Branch = branch });
+            }
+            return item;
         }
 
         /// <summary>Groups branches into folders by '/' in their display name (so a remote's
-        /// "origin/" prefix doesn't itself become a folder). Cheap to call often since it's just
-        /// dictionary lookups; the expensive part (this) is cached and only rebuilt when the
-        /// underlying branch list actually changes - see FlattenBranchTree for display refreshes.</summary>
+        /// "origin/" prefix doesn't itself become a folder).</summary>
         private static BranchFolderNode BuildBranchFolderTree(IReadOnlyList<GitBranch> branches)
         {
             var root = new BranchFolderNode();
-
-            // Pinned branches get a synthetic folder at the very top, in addition to (not
-            // instead of) their normal folder position below - a shortcut, not a move.
-            var pinned = branches.Where(b => b.IsPinned).ToList();
-            if (pinned.Count > 0)
-            {
-                var pinnedFolder = root.GetOrAddChildFolder(PinnedFolderName);
-                foreach (var branch in pinned)
-                {
-                    pinnedFolder.Leaves.Add((branch.DisplayName, branch));
-                }
-                root.ChildFolderOrder.Remove(PinnedFolderName);
-                root.ChildFolderOrder.Insert(0, PinnedFolderName);
-            }
 
             foreach (var branch in branches)
             {
@@ -398,36 +405,6 @@ namespace Girt.ViewModels
                 node.Leaves.Add((segments[^1], branch));
             }
             return root;
-        }
-
-        /// <summary>Produces a flat, indented list from a cached tree: folders before their
-        /// branches, each in first-seen order. A folder whose full path is in
-        /// <paramref name="collapsedFolders"/> is shown but its contents are omitted.</summary>
-        private static List<BranchTreeItem> FlattenBranchTree(BranchFolderNode root, HashSet<string> collapsedFolders)
-        {
-            var result = new List<BranchTreeItem>();
-            AppendBranchFolder(root, depth: 0, parentPath: "", result, collapsedFolders);
-            return result;
-        }
-
-        private static void AppendBranchFolder(BranchFolderNode node, int depth, string parentPath, List<BranchTreeItem> result, HashSet<string> collapsedFolders)
-        {
-            foreach (var folderName in node.ChildFolderOrder)
-            {
-                var folderPath = parentPath.Length == 0 ? folderName : $"{parentPath}/{folderName}";
-                var isCollapsed = collapsedFolders.Contains(folderPath);
-                result.Add(new BranchTreeItem { IsFolder = true, DisplayName = folderName, Depth = depth, FolderPath = folderPath, IsCollapsed = isCollapsed });
-
-                if (!isCollapsed)
-                {
-                    AppendBranchFolder(node.ChildFolders[folderName], depth + 1, folderPath, result, collapsedFolders);
-                }
-            }
-
-            foreach (var (leafName, branch) in node.Leaves)
-            {
-                result.Add(new BranchTreeItem { IsFolder = false, DisplayName = leafName, Depth = depth, Branch = branch });
-            }
         }
 
         private class BranchFolderNode

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Transparent background so the mark itself sits on whatever theme (dark/light taskbar) -->
+
+  <!-- Sea disc -->
+  <circle cx="512" cy="512" r="480" fill="#1878A8"/>
+
+  <!-- Girt-by-sea rings (concentric ripples wrapping the island, like it's encircled) -->
+  <circle cx="512" cy="512" r="480" fill="none" stroke="#EAF6FA" stroke-width="18" opacity="0.55"/>
+  <circle cx="512" cy="512" r="404" fill="none" stroke="#EAF6FA" stroke-width="16" opacity="0.35"/>
+
+  <!-- Sun -->
+  <circle cx="710" cy="310" r="52" fill="#FFD166"/>
+
+  <!-- Beach / island base -->
+  <ellipse cx="512" cy="640" rx="270" ry="72" fill="#F2D48C"/>
+
+  <!-- Island hill mass: overlapping rounded shapes for a natural, non-geometric silhouette -->
+  <g fill="#2E9B4F">
+    <ellipse cx="418" cy="562" rx="136" ry="112"/>
+    <ellipse cx="566" cy="586" rx="158" ry="100"/>
+    <ellipse cx="500" cy="458" rx="106" ry="122"/>
+  </g>
+  <g fill="#3FB25F">
+    <ellipse cx="466" cy="412" rx="78" ry="90"/>
+  </g>
+
+  <!-- Two simple trees for scale/character -->
+  <g fill="#1F6E38">
+    <circle cx="398" cy="492" r="29"/>
+    <circle cx="466" cy="458" r="22"/>
+  </g>
+  <rect x="392" y="494" width="11" height="34" fill="#7A4A28"/>
+  <rect x="460" y="462" width="9" height="27" fill="#7A4A28"/>
+</svg>
