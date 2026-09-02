@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -72,6 +73,23 @@ namespace Girt.ViewModels
             _onRepositoryUpdated = onRepositoryUpdated;
             _savePushAfterCommit = savePushAfterCommit;
             _pushAfterCommit = initialPushAfterCommit;
+
+            // TotalChangesCount/HasStagedFiles/HasUnstagedFiles are computed from these two
+            // collections but raise no notification of their own - they used to only update
+            // via an explicit OnPropertyChanged call inside LoadChangesAsync, which meant every
+            // optimistic mutation elsewhere (stage/unstage/discard/commit moving files between
+            // the lists directly, without a reload) left them stale: the lists themselves were
+            // correct, but the "N" header bound to TotalChangesCount kept showing whatever it
+            // was before. Subscribing here catches every mutation path automatically.
+            StagedFiles.CollectionChanged += (_, _) => NotifyChangeCountsUpdated();
+            UnstagedFiles.CollectionChanged += (_, _) => NotifyChangeCountsUpdated();
+        }
+
+        private void NotifyChangeCountsUpdated()
+        {
+            OnPropertyChanged(nameof(TotalChangesCount));
+            OnPropertyChanged(nameof(HasStagedFiles));
+            OnPropertyChanged(nameof(HasUnstagedFiles));
         }
 
         partial void OnPushAfterCommitChanged(bool value)
@@ -101,10 +119,6 @@ namespace Girt.ViewModels
 
                 UnstagedFiles.Clear();
                 foreach (var f in changes.UnstagedFiles) UnstagedFiles.Add(f);
-
-                OnPropertyChanged(nameof(TotalChangesCount));
-                OnPropertyChanged(nameof(HasStagedFiles));
-                OnPropertyChanged(nameof(HasUnstagedFiles));
 
                 if (SelectedFile != null)
                 {
@@ -170,11 +184,28 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, _) = await _gitService.StageFileAsync(repoPath, file.Path);
+            // Optimistic: staging a file that's already listed as changed practically never
+            // fails, and this is the single most-clicked action in this panel - move it across
+            // immediately instead of waiting on a git round-trip + full re-list, and roll back
+            // only if the git command actually fails.
+            var originalStatus = file.Status;
+            UnstagedFiles.Remove(file);
+            file.IsStaged = true;
+            if (file.Status == FileStatusType.Untracked) file.Status = FileStatusType.Added;
+            StagedFiles.Add(file);
+
+            var (success, output) = await _gitService.StageFileAsync(repoPath, file.Path);
             if (success)
             {
-                await LoadChangesAsync();
                 await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                StagedFiles.Remove(file);
+                file.IsStaged = false;
+                file.Status = originalStatus;
+                UnstagedFiles.Add(file);
+                MessageBox.Show($"Failed to stage file:\n{output}", "Stage Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -187,11 +218,24 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, _) = await _gitService.UnstageFileAsync(repoPath, file.Path);
+            var originalStatus = file.Status;
+            StagedFiles.Remove(file);
+            file.IsStaged = false;
+            if (file.Status == FileStatusType.Added) file.Status = FileStatusType.Untracked;
+            UnstagedFiles.Add(file);
+
+            var (success, output) = await _gitService.UnstageFileAsync(repoPath, file.Path);
             if (success)
             {
-                await LoadChangesAsync();
                 await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                UnstagedFiles.Remove(file);
+                file.IsStaged = true;
+                file.Status = originalStatus;
+                StagedFiles.Add(file);
+                MessageBox.Show($"Failed to unstage file:\n{output}", "Unstage Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -200,12 +244,33 @@ namespace Girt.ViewModels
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
+            if (UnstagedFiles.Count == 0) return;
 
-            var (success, _) = await _gitService.StageAllAsync(repoPath);
+            var moved = UnstagedFiles.ToList();
+            var originalStatuses = moved.ToDictionary(f => f, f => f.Status);
+            UnstagedFiles.Clear();
+            foreach (var f in moved)
+            {
+                f.IsStaged = true;
+                if (f.Status == FileStatusType.Untracked) f.Status = FileStatusType.Added;
+                StagedFiles.Add(f);
+            }
+
+            var (success, output) = await _gitService.StageAllAsync(repoPath);
             if (success)
             {
-                await LoadChangesAsync();
                 await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                foreach (var f in moved)
+                {
+                    StagedFiles.Remove(f);
+                    f.IsStaged = false;
+                    f.Status = originalStatuses[f];
+                    UnstagedFiles.Add(f);
+                }
+                MessageBox.Show($"Failed to stage all:\n{output}", "Stage Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -214,12 +279,33 @@ namespace Girt.ViewModels
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
+            if (StagedFiles.Count == 0) return;
 
-            var (success, _) = await _gitService.UnstageAllAsync(repoPath);
+            var moved = StagedFiles.ToList();
+            var originalStatuses = moved.ToDictionary(f => f, f => f.Status);
+            StagedFiles.Clear();
+            foreach (var f in moved)
+            {
+                f.IsStaged = false;
+                if (f.Status == FileStatusType.Added) f.Status = FileStatusType.Untracked;
+                UnstagedFiles.Add(f);
+            }
+
+            var (success, output) = await _gitService.UnstageAllAsync(repoPath);
             if (success)
             {
-                await LoadChangesAsync();
                 await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                foreach (var f in moved)
+                {
+                    UnstagedFiles.Remove(f);
+                    f.IsStaged = true;
+                    f.Status = originalStatuses[f];
+                    StagedFiles.Add(f);
+                }
+                MessageBox.Show($"Failed to unstage all:\n{output}", "Unstage Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -240,14 +326,19 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
+            // Optimistic: discarding removes the file from view either way (reverted to a
+            // clean/untracked-deleted state), so drop it immediately and restore it if the
+            // discard actually fails.
+            UnstagedFiles.Remove(file);
+
             var (success, error) = await _gitService.DiscardChangesAsync(repoPath, file.Path);
             if (success)
             {
-                await LoadChangesAsync();
                 await _onRepositoryUpdated(false);
             }
             else
             {
+                UnstagedFiles.Add(file);
                 MessageBox.Show($"Failed to discard changes: {error}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -261,7 +352,7 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, ignoreByExtension: false);
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, GitIgnoreTarget.File);
             if (success)
             {
                 await LoadChangesAsync();
@@ -282,7 +373,27 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, ignoreByExtension: true);
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, GitIgnoreTarget.Extension);
+            if (success)
+            {
+                await LoadChangesAsync();
+                await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                MessageBox.Show($"Failed to update .gitignore: {msg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        [RelayCommand]
+        public async Task IgnoreFolderAsync(string? folderPath)
+        {
+            if (string.IsNullOrEmpty(folderPath)) return;
+
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, folderPath, GitIgnoreTarget.Folder);
             if (success)
             {
                 await LoadChangesAsync();
@@ -330,11 +441,26 @@ namespace Girt.ViewModels
             }
         }
 
+        // Overridable so tests can auto-confirm without popping a real MessageBox; production
+        // code never sets this and gets the real Yes/No dialog.
+        public Func<string, bool> ConfirmStashAction { get; set; } =
+            message => MessageBox.Show(message, "Confirm", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
         [RelayCommand]
         public async Task StashPopAsync()
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
+
+            // Pop applies the top stash to whatever branch is currently checked out - if that
+            // stash was made on a different branch (the common case with several stashes
+            // stacked up), it silently lands changes meant for elsewhere. Show what's about to
+            // be applied before doing it, same as Discard's confirmation.
+            var topStash = await _gitService.GetTopStashDescriptionAsync(repoPath);
+            var message = topStash != null
+                ? $"Pop the top stash onto the current working tree?\n\n{topStash}\n\nThis applies it and removes it from the stash list."
+                : "Pop the top stash onto the current working tree?";
+            if (!ConfirmStashAction(message)) return;
 
             IsLoading = true;
             try
@@ -361,6 +487,12 @@ namespace Girt.ViewModels
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
+
+            var topStash = await _gitService.GetTopStashDescriptionAsync(repoPath);
+            var message = topStash != null
+                ? $"Apply the top stash onto the current working tree?\n\n{topStash}\n\nThe stash stays in the list afterwards."
+                : "Apply the top stash onto the current working tree?";
+            if (!ConfirmStashAction(message)) return;
 
             IsLoading = true;
             try
@@ -407,7 +539,14 @@ namespace Girt.ViewModels
                 var (success, output) = await _gitService.CommitAsync(repoPath, message);
                 if (success)
                 {
+                    // Optimistic: a commit commits exactly what was staged, so assume success
+                    // and clear the message/staged list immediately rather than waiting on
+                    // LoadChangesAsync's round-trip to confirm what we already know. The
+                    // heavier repository-wide refresh runs after, and silently (see
+                    // MainViewModel.OnWorkingChangesUpdatedAsync) so it doesn't block the UI.
                     CommitMessage = string.Empty;
+                    StagedFiles.Clear();
+
                     await LoadChangesAsync();
                     await _onRepositoryUpdated(true); // Is new commit
                 }

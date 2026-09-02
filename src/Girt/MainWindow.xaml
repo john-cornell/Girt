@@ -21,6 +21,9 @@
         <converters:BoolToVisibilityConverter x:Key="BoolToVisConverter" />
         <converters:HexToBrushConverter x:Key="HexToBrushConverter" />
         <converters:DepthToIndentConverter x:Key="DepthToIndentConverter" />
+        <converters:BranchPinToggleLabelConverter x:Key="BranchPinToggleLabelConverter" />
+        <converters:PushModeGlyphConverter x:Key="PushModeGlyphConverter" />
+        <converters:PushModeTooltipConverter x:Key="PushModeTooltipConverter" />
     </Window.Resources>
 
     <Window.InputBindings>
@@ -49,11 +52,16 @@
                     <ColumnDefinition Width="Auto" />
                     <!-- Repo Open & Dropdown -->
                     <ColumnDefinition Width="Auto" />
-                    <!-- Repo Name & Branch Pill -->
+                    <!-- Repo Name & Branch Pill - the branch name itself is capped/ellipsized
+                         (see CurrentBranch TextBlock below) so a long branch name can't crowd
+                         out the badges/actions that follow it. -->
                     <ColumnDefinition Width="Auto" />
-                    <!-- Status / Sync Badges (#to commit, #to push, #to pull) -->
+                    <!-- Status / Sync Badges (#to commit, #to push, #to pull) - Auto, not *, so
+                         these always render at full size instead of being the thing squeezed. -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- Spacer - absorbs leftover space so Right Actions stays pinned right. -->
                     <ColumnDefinition Width="*" />
-                    <!-- Right Actions (Reset, Refresh, Theme) -->
+                    <!-- Right Actions (Fetch, Reset, Refresh, Theme) -->
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -111,12 +119,14 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Active Branch -->
+                    <!-- Active Branch - name is capped/ellipsized (full name in the tooltip) so
+                         a long branch name can't push the badges/actions after it out of view. -->
                     <Border Background="{DynamicResource ActiveItemHighlightBrush}"
                             BorderBrush="{DynamicResource BorderAccentBrush}"
                             BorderThickness="1"
                             CornerRadius="6"
-                            Padding="8,4">
+                            Padding="8,4"
+                            ToolTip="{Binding CurrentBranch}">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="⑂ "
                                        Foreground="{DynamicResource TextAccentBrush}"
@@ -125,7 +135,9 @@
                             <TextBlock Text="{Binding CurrentBranch}"
                                        FontWeight="Bold"
                                        Foreground="{DynamicResource TextAccentBrush}"
-                                       VerticalAlignment="Center" />
+                                       VerticalAlignment="Center"
+                                       MaxWidth="240"
+                                       TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -153,11 +165,22 @@
                         </Border>
                     </Button>
 
-                    <!-- Waiting to push button/badge -->
-                    <Button Command="{Binding PushCommand}"
+                    <!-- Toggles whether the pill below reviews first or pushes immediately;
+                         the choice is persisted so it only has to be set once. -->
+                    <Button Command="{Binding ToggleReviewBeforePushCommand}"
+                            Style="{StaticResource ToolButtonStyle}"
+                            Content="{Binding PushPillOpensReview, Converter={StaticResource PushModeGlyphConverter}}"
+                            FontSize="12"
+                            Padding="4,2"
+                            Margin="0,0,4,0"
+                            ToolTip="{Binding PushPillOpensReview, Converter={StaticResource PushModeTooltipConverter}}" />
+
+                    <!-- Waiting to push button/badge - opens the review dialog or pushes
+                         immediately depending on the mode toggled above. -->
+                    <Button Command="{Binding PushPillClickedCommand}"
                             Style="{StaticResource ToolButtonStyle}"
                             Padding="0" Margin="0,0,8,0"
-                            ToolTip="Click to push local commits to upstream">
+                            ToolTip="{Binding PushPillOpensReview, Converter={StaticResource PushModeTooltipConverter}}">
                         <Border Background="#263B82F6"
                                 BorderBrush="#3B82F6"
                                 BorderThickness="1"
@@ -196,26 +219,32 @@
                         </Border>
                     </Button>
 
-                    <!-- Working indicator - obvious in-progress badge next to the commit/push/pull pills -->
+                    <!-- Working indicator - shown for both the blocking overlay case (IsLoading)
+                         and silent background refreshes (IsBackgroundBusy), so there's always
+                         some visible feedback that something is happening even when nothing is
+                         blocking input. Text follows StatusMessage rather than a static label,
+                         since that's already set to something specific by whatever is running. -->
                     <Border Background="{DynamicResource ActiveItemHighlightBrush}"
                             BorderBrush="{DynamicResource BorderAccentBrush}"
                             BorderThickness="1"
                             CornerRadius="6"
                             Padding="8,4"
-                            Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisConverter}}">
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisConverter}}">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="⏳ " Foreground="{DynamicResource TextAccentBrush}" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
-                            <TextBlock Text="Working..."
+                            <TextBlock Text="{Binding StatusMessage}"
                                        Foreground="{DynamicResource TextAccentBrush}"
                                        FontWeight="SemiBold"
                                        FontSize="12"
+                                       MaxWidth="260"
+                                       TextTrimming="CharacterEllipsis"
                                        VerticalAlignment="Center" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
 
                 <!-- Right Actions: Branch View Mode, Fetch, Reset HEAD, Refresh, Theme -->
-                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- Active Branch Isolation Indicator Pill & Reset -->
                     <Border Background="{DynamicResource CardBackgroundBrush}"
                             BorderBrush="#3B82F6"
@@ -254,6 +283,14 @@
                             Command="{Binding RefreshRepositoryCommand}"
                             Margin="0,0,6,0"
                             ToolTip="Refresh repository status and commit log (Shortcut: F5)" />
+
+                    <CheckBox Content="Auto"
+                              IsChecked="{Binding AutoRefresh}"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
+                              FontSize="11"
+                              VerticalAlignment="Center"
+                              Margin="0,0,10,0"
+                              ToolTip="When checked, an external change to .git (another tool, a background sync) triggers a full refresh automatically. Off by default - only the pills (ahead/behind/uncommitted/branch) update on their own; your own actions here always update immediately regardless of this." />
 
                     <Button Content="🌓 Theme"
                             Style="{StaticResource ToolButtonStyle}"
@@ -370,7 +407,8 @@
                                     </Grid>
                                     <ListBox ItemsSource="{Binding BranchList.NewBranches}"
                                              Style="{StaticResource ModernListBoxStyle}"
-                                             ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
+                                             ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                             PreviewMouseWheel="OnBranchListPreviewMouseWheel">
                                         <ListBox.ItemTemplate>
                                             <DataTemplate DataType="{x:Type models:GitBranch}">
                                                 <Grid Margin="2,2">
@@ -438,6 +476,7 @@
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
                                     <ListBox.ItemTemplate>
@@ -451,20 +490,28 @@
                                                 <!-- Context menu is per-row (bound to {Binding} = this branch), not the
                                                      ListBox's SelectedItem, since right-click doesn't change selection. -->
                                                 <Grid.ContextMenu>
-                                                    <ContextMenu>
-                                                        <MenuItem Header="🗂 Group into Folders"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="☰ Show as Flat List"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}}" />
+                                                    <ContextMenu Opened="OnBranchContextMenuOpened">
+                                                        <MenuItem Name="GroupIntoFoldersMenuItem"
+                                                                  Header="🗂 Group into Folders"
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
+                                                        <MenuItem Name="ShowAsFlatListMenuItem"
+                                                                  Header="☰ Show as Flat List"
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
                                                         <Separator />
-                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Header="{Binding IsPinned, Converter={StaticResource BranchPinToggleLabelConverter}}"
+                                                                  Click="OnTogglePinBranchClicked" />
+                                                        <Separator />
+                                                        <MenuItem Name="DimToForkMenuItem"
+                                                                  Header="🔍 Dim to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding}" />
-                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Name="HideToForkMenuItem"
+                                                                  Header="👁 Hide to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding}" />
+                                                        <MenuItem Name="ShowAllMenuItem"
+                                                                  Header="✕ Show All Commits (Reset)"
+                                                                  Click="OnClearIsolationClicked" />
                                                         <Separator />
                                                         <MenuItem Header="Checkout Branch"
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -498,13 +545,18 @@
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
-                                                <!-- Active Head Indicator -->
-                                                <TextBlock Grid.Column="0"
-                                                           Text="● "
-                                                           Foreground="#10B981"
-                                                           FontSize="10"
-                                                           VerticalAlignment="Center"
-                                                           Visibility="{Binding IsCurrent, Converter={StaticResource BoolToVisConverter}}" />
+                                                <!-- Active Head / Pinned Indicator -->
+                                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                    <TextBlock Text="● "
+                                                               Foreground="#10B981"
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding IsCurrent, Converter={StaticResource BoolToVisConverter}}" />
+                                                    <TextBlock Text="📌 "
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisConverter}}" />
+                                                </StackPanel>
 
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding Name}"
@@ -530,6 +582,7 @@
                                 <ListBox ItemsSource="{Binding BranchList.LocalBranchTree}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
                                     <ListBox.ItemTemplate>
@@ -542,18 +595,25 @@
                                                 </Grid.ColumnDefinitions>
                                                 <Grid.ContextMenu>
                                                     <!-- Leaf-only actions are hidden on folder rows via IsFolder -->
-                                                    <ContextMenu>
+                                                    <ContextMenu Opened="OnBranchContextMenuOpened">
                                                         <MenuItem Header="☰ Show as Flat List"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
                                                         <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Name="PinMenuItem"
+                                                                  Header="{Binding Branch.IsPinned, Converter={StaticResource BranchPinToggleLabelConverter}}"
+                                                                  Click="OnTogglePinBranchClicked" />
+                                                        <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Name="DimToForkMenuItem"
+                                                                  Header="🔍 Dim to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding Branch}"
-                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  CommandParameter="{Binding Branch}" />
+                                                        <MenuItem Name="HideToForkMenuItem"
+                                                                  Header="👁 Hide to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding Branch}"
-                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                                  CommandParameter="{Binding Branch}" />
+                                                        <MenuItem Name="ShowAllMenuItem"
+                                                                  Header="✕ Show All Commits (Reset)"
+                                                                  Click="OnClearIsolationClicked" />
                                                         <MenuItem Header="Checkout Branch"
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
@@ -594,13 +654,22 @@
                                                     </StackPanel>
                                                 </Button>
 
-                                                <!-- Active-head dot (leaf branches only) -->
-                                                <TextBlock Grid.Column="0"
-                                                           Text="● "
-                                                           Foreground="#10B981"
-                                                           FontSize="10"
-                                                           VerticalAlignment="Center"
-                                                           Visibility="{Binding Branch.IsCurrent, Converter={StaticResource BoolToVisConverter}}" />
+                                                <!-- Active-head / pinned indicator (leaf branches only). FallbackValue matters here:
+                                                     on a folder row, Branch is null, so Branch.IsCurrent/IsPinned can't be evaluated
+                                                     at all - without an explicit fallback, WPF leaves Visibility untouched rather
+                                                     than treating the missing value as false, which defaults it to Visible and
+                                                     shows the dot/pin on every folder row. -->
+                                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                    <TextBlock Text="● "
+                                                               Foreground="#10B981"
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding Branch.IsCurrent, Converter={StaticResource BoolToVisConverter}, FallbackValue=Collapsed}" />
+                                                    <TextBlock Text="📌 "
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding Branch.IsPinned, Converter={StaticResource BoolToVisConverter}, FallbackValue=Collapsed}" />
+                                                </StackPanel>
 
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding DisplayName}"
@@ -609,7 +678,9 @@
                                                            VerticalAlignment="Center"
                                                            Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
 
-                                                <!-- Checkout Quick Action Button (leaf branches only) -->
+                                                <!-- Checkout Quick Action Button (leaf branches only, and not the one already
+                                                     checked out - CanCheckout covers both, unlike the plain IsFolder check this
+                                                     used to use). -->
                                                 <Button Grid.Column="2"
                                                         Content="Checkout"
                                                         Style="{StaticResource ToolButtonStyle}"
@@ -617,7 +688,7 @@
                                                         Padding="4,1"
                                                         Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                         CommandParameter="{Binding Branch}"
-                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -664,6 +735,7 @@
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
                                     <ListBox.ItemTemplate>
@@ -676,20 +748,28 @@
                                                 <!-- Context menu is per-row (bound to {Binding} = this branch), not the
                                                      ListBox's SelectedItem, since right-click doesn't change selection. -->
                                                 <Grid.ContextMenu>
-                                                    <ContextMenu>
-                                                        <MenuItem Header="🗂 Group into Folders"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="☰ Show as Flat List"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  Visibility="{Binding DataContext.BranchList.GroupBranchesIntoFolders, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisConverter}}" />
+                                                    <ContextMenu Opened="OnBranchContextMenuOpened">
+                                                        <MenuItem Name="GroupIntoFoldersMenuItem"
+                                                                  Header="🗂 Group into Folders"
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
+                                                        <MenuItem Name="ShowAsFlatListMenuItem"
+                                                                  Header="☰ Show as Flat List"
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
                                                         <Separator />
-                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Name="DimToForkMenuItem"
+                                                                  Header="🔍 Dim to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding}" />
-                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Name="HideToForkMenuItem"
+                                                                  Header="👁 Hide to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding}" />
+                                                        <MenuItem Name="ShowAllMenuItem"
+                                                                  Header="✕ Show All Commits (Reset)"
+                                                                  Click="OnClearIsolationClicked" />
+                                                        <Separator />
+                                                        <MenuItem Header="{Binding IsPinned, Converter={StaticResource BranchPinToggleLabelConverter}}"
+                                                                  Click="OnTogglePinBranchClicked" />
                                                         <Separator />
                                                         <MenuItem Header="Checkout as Local Branch..."
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -719,11 +799,16 @@
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
-                                                <TextBlock Grid.Column="0"
-                                                           Text="{Binding DisplayName}"
-                                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                    <TextBlock Text="📌 "
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisConverter}}" />
+                                                    <TextBlock Text="{Binding DisplayName}"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
 
                                                 <Button Grid.Column="1"
                                                         Content="Checkout"
@@ -741,6 +826,7 @@
                                 <ListBox ItemsSource="{Binding BranchList.RemoteBranchTree}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
                                     <ListBox.ItemTemplate>
@@ -752,18 +838,25 @@
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <Grid.ContextMenu>
-                                                    <ContextMenu>
+                                                    <ContextMenu Opened="OnBranchContextMenuOpened">
                                                         <MenuItem Header="☰ Show as Flat List"
-                                                                  Command="{Binding DataContext.BranchList.ToggleGroupBranchesIntoFoldersCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                                  Click="OnToggleGroupBranchesIntoFoldersClicked" />
                                                         <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="🔍 Dim to Trunk Fork (Isolate branch)"
+                                                        <MenuItem Name="PinMenuItem"
+                                                                  Header="{Binding Branch.IsPinned, Converter={StaticResource BranchPinToggleLabelConverter}}"
+                                                                  Click="OnTogglePinBranchClicked" />
+                                                        <Separator Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Name="DimToForkMenuItem"
+                                                                  Header="🔍 Dim to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.DimToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding Branch}"
-                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
-                                                        <MenuItem Header="👁 Hide to Trunk Fork (Isolate branch)"
+                                                                  CommandParameter="{Binding Branch}" />
+                                                        <MenuItem Name="HideToForkMenuItem"
+                                                                  Header="👁 Hide to Trunk Fork (Isolate branch)"
                                                                   Command="{Binding DataContext.CommitHistory.HideToForkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding Branch}"
-                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                                  CommandParameter="{Binding Branch}" />
+                                                        <MenuItem Name="ShowAllMenuItem"
+                                                                  Header="✕ Show All Commits (Reset)"
+                                                                  Click="OnClearIsolationClicked" />
                                                         <MenuItem Header="Checkout as Local Branch..."
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
@@ -800,6 +893,14 @@
                                                     </StackPanel>
                                                 </Button>
 
+                                                <!-- Pinned indicator (leaf branches only) - FallbackValue matters here, same reason
+                                                     as the local branch tree's active-head/pinned indicator above. -->
+                                                <TextBlock Grid.Column="0"
+                                                           Text="📌 "
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding Branch.IsPinned, Converter={StaticResource BoolToVisConverter}, FallbackValue=Collapsed}" />
+
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding DisplayName}"
                                                            Foreground="{DynamicResource TextSecondaryBrush}"
@@ -814,7 +915,7 @@
                                                         Padding="4,1"
                                                         Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                         CommandParameter="{Binding Branch}"
-                                                        Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -1193,6 +1294,17 @@
                                     <MenuItem Header="Add to .gitignore"
                                               Command="{Binding CommitDetail.AddToGitIgnoreCommand}"
                                               CommandParameter="{Binding CommitDetail.SelectedFile}" />
+                                    <MenuItem Header="Add folder to .gitignore"
+                                              ItemsSource="{Binding CommitDetail.SelectedFile.AncestorFolders}"
+                                              Tag="{Binding CommitDetail.IgnoreFolderCommand}">
+                                        <MenuItem.ItemContainerStyle>
+                                            <Style TargetType="MenuItem">
+                                                <Setter Property="Header" Value="{Binding}" />
+                                                <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
+                                                <Setter Property="CommandParameter" Value="{Binding}" />
+                                            </Style>
+                                        </MenuItem.ItemContainerStyle>
+                                    </MenuItem>
                                     <MenuItem Header="Add extension to .gitignore (*.ext)"
                                               Command="{Binding CommitDetail.IgnoreExtensionCommand}"
                                               CommandParameter="{Binding CommitDetail.SelectedFile}" />
@@ -1363,6 +1475,17 @@
                                             <MenuItem Header="Add to .gitignore"
                                                       Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
+                                            <MenuItem Header="Add folder to .gitignore"
+                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}"
+                                                      Tag="{Binding WorkingChanges.IgnoreFolderCommand}">
+                                                <MenuItem.ItemContainerStyle>
+                                                    <Style TargetType="MenuItem">
+                                                        <Setter Property="Header" Value="{Binding}" />
+                                                        <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
+                                                        <Setter Property="CommandParameter" Value="{Binding}" />
+                                                    </Style>
+                                                </MenuItem.ItemContainerStyle>
+                                            </MenuItem>
                                             <MenuItem Header="Add extension to .gitignore (*.ext)"
                                                       Command="{Binding WorkingChanges.IgnoreExtensionCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
@@ -1485,6 +1608,17 @@
                                             <MenuItem Header="Add to .gitignore"
                                                       Command="{Binding WorkingChanges.AddToGitIgnoreCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
+                                            <MenuItem Header="Add folder to .gitignore"
+                                                      ItemsSource="{Binding WorkingChanges.SelectedFile.AncestorFolders}"
+                                                      Tag="{Binding WorkingChanges.IgnoreFolderCommand}">
+                                                <MenuItem.ItemContainerStyle>
+                                                    <Style TargetType="MenuItem">
+                                                        <Setter Property="Header" Value="{Binding}" />
+                                                        <Setter Property="Command" Value="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=MenuItem, AncestorLevel=1}, Path=Tag}" />
+                                                        <Setter Property="CommandParameter" Value="{Binding}" />
+                                                    </Style>
+                                                </MenuItem.ItemContainerStyle>
+                                            </MenuItem>
                                             <MenuItem Header="Add extension to .gitignore (*.ext)"
                                                       Command="{Binding WorkingChanges.IgnoreExtensionCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
@@ -1819,6 +1953,260 @@
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 Command="{Binding ConfirmResetCommand}" />
                     </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- MODAL 3: REVIEW UNPUSHED CHANGES - the combined diff of everything a push would
+             send, so the user can see what's going up before committing to it. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding UnpushedChanges.IsOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="900" Height="600"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="{Binding RepoStatus.AheadCount, StringFormat='Review Unpushed Changes ({0} commit(s))'}"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,12" />
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="260" />
+                            <ColumnDefinition Width="4" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Grid Grid.Column="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0"
+                                       Text="{Binding UnpushedChanges.ChangedFiles.Count, StringFormat='CHANGED FILES ({0})'}"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,0,0,6" />
+
+                            <ListBox Grid.Row="1"
+                                     ItemsSource="{Binding UnpushedChanges.ChangedFiles}"
+                                     SelectedItem="{Binding UnpushedChanges.SelectedFile}"
+                                     Style="{StaticResource ModernListBoxStyle}"
+                                     ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type models:GitFileDiff}">
+                                        <Grid Margin="2,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <Border Grid.Column="0"
+                                                    Background="{Binding StatusColor, Converter={StaticResource HexToBrushConverter}}"
+                                                    CornerRadius="3"
+                                                    Width="16" Height="16"
+                                                    Margin="0,0,8,0">
+                                                <TextBlock Text="{Binding StatusBadge}"
+                                                           Foreground="#FFFFFF"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding DisplayName}"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       FontSize="12"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center" />
+
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Additions, StringFormat='+{0} '}" Foreground="#10B981" FontSize="11" />
+                                                <TextBlock Text="{Binding Deletions, StringFormat='-{0}'}" Foreground="#EF4444" FontSize="11" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+
+                        <GridSplitter Grid.Column="1"
+                                      Width="4"
+                                      HorizontalAlignment="Stretch"
+                                      Background="{DynamicResource BorderBrush}"
+                                      Cursor="SizeWE" />
+
+                        <controls:DiffViewerControl Grid.Column="2"
+                                                    DataContext="{Binding UnpushedChanges}" />
+                    </Grid>
+
+                    <Grid Grid.Row="2" Margin="0,12,0,0">
+                        <!-- Coarse reset of everything unpushed, to the upstream branch - for
+                             per-commit control instead, use the main "↺ Reset HEAD" toolbar
+                             button, which targets a specific commit or branch. -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Button Content="↺ Soft Reset"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding ResetToUpstreamCommand}"
+                                    CommandParameter="Soft"
+                                    Margin="0,0,8,0"
+                                    ToolTip="Undo all these commits but keep their changes staged" />
+
+                            <Button Content="↺ Hard Reset"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding ResetToUpstreamCommand}"
+                                    CommandParameter="Hard"
+                                    Foreground="#EF4444"
+                                    ToolTip="Permanently discard all these commits and their changes" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Close"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding UnpushedChanges.CloseCommand}"
+                                    Margin="0,0,8,0" />
+
+                            <Button Content="⬆ Push"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding PushFromReviewCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: PULL CHOICE - shown only when the branch has diverged from upstream (commits
+             on both sides), since a plain pull there silently creates a merge commit. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsPullChoiceDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="460"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="⇣ Branch Has Diverged"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,8" />
+
+                    <TextBlock FontSize="12"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,16">
+                        <Run Text="Your branch has " />
+                        <Run Text="{Binding RepoStatus.AheadCount, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextAccentBrush}" />
+                        <Run Text=" commit(s) not on " />
+                        <Run Text="{Binding RepoStatus.UpstreamBranch, Mode=OneWay}" FontWeight="SemiBold" />
+                        <Run Text=", which has " />
+                        <Run Text="{Binding RepoStatus.BehindCount, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextAccentBrush}" />
+                        <Run Text=" commit(s) you don't have. A plain pull here will create a merge commit - pick how to reconcile instead." />
+                    </TextBlock>
+
+                    <!-- Merge Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,8">
+                        <Button Command="{Binding ConfirmPullMergeCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Merge" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <TextBlock Text="Combines both histories with a merge commit. Preserves exactly what happened, but adds a merge commit to the log."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <!-- Rebase Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,16">
+                        <Button Command="{Binding ConfirmPullRebaseCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Rebase" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <TextBlock Text="Replays your commit(s) on top of theirs. Keeps history linear with no merge commit, but rewrites your local commit hash(es)."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancel"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CancelPullChoiceDialogCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- MODAL 4: BUSY OVERLAY - blocks input for any long-running operation (checkout,
+             opening/switching repos, push/pull/fetch, etc.), all of which set IsLoading. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="320"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="{Binding StatusMessage}"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Margin="0,0,0,14" />
+                    <ProgressBar IsIndeterminate="True" Height="6" />
                 </StackPanel>
             </Border>
         </Grid>

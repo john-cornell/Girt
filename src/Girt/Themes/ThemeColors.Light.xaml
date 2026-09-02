@@ -35,4 +35,5 @@
     <SolidColorBrush x:Key="DiffDeletedTextBrush" Color="#CF222E" />
     <SolidColorBrush x:Key="DiffHeaderBgBrush" Color="#DDF4FF" />
     <SolidColorBrush x:Key="DiffHeaderTextBrush" Color="#0969DA" />
+    <SolidColorBrush x:Key="DiffExpandedBgBrush" Color="#FFF8C5" />
 </ResourceDictionary>

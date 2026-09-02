@@ -6,14 +6,25 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets\app_icon.ico</ApplicationIcon>
-    <Version>0.4.2</Version>
-    <AssemblyVersion>0.4.2.0</AssemblyVersion>
-    <FileVersion>0.4.2.0</FileVersion>
+    <Version>0.4.27</Version>
+    <AssemblyVersion>0.4.27.0</AssemblyVersion>
+    <FileVersion>0.4.27.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <!-- UseWindowsForms is only here for NotifyIcon (the tray icon). Its implicit global
+       "using System.Windows.Forms" collides with WPF's System.Windows on many common names
+       (MessageBox, Application, Timer, Color, ...) throughout the codebase - removing just
+       that implicit using keeps the assembly reference (so Forms.NotifyIcon etc. still resolve
+       via the explicit "Forms =" alias in MainWindow.xaml.cs) without the blanket collision. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
 
   <ItemGroup>

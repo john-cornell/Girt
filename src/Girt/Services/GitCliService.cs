@@ -27,7 +27,7 @@ namespace Girt.Services
                 return null;
             }
 
-            var (success, output, _) = await RunGitCommandAsync(directoryPath, "rev-parse --show-toplevel");
+            var (success, output, _) = await RunGitCommandAsync(directoryPath, "rev-parse --show-toplevel").ConfigureAwait(false);
             if (success && !string.IsNullOrWhiteSpace(output))
             {
                 var trimmed = output.Trim().Replace('/', Path.DirectorySeparatorChar);
@@ -39,7 +39,7 @@ namespace Girt.Services
 
         public async Task<string?> GetCurrentBranchAsync(string repoPath)
         {
-            var (success, output, _) = await RunGitCommandAsync(repoPath, "rev-parse --abbrev-ref HEAD");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "rev-parse --abbrev-ref HEAD").ConfigureAwait(false);
             if (success && !string.IsNullOrWhiteSpace(output))
             {
                 var branch = output.Trim();
@@ -53,33 +53,37 @@ namespace Girt.Services
             var status = new GitRepoStatus();
             if (string.IsNullOrWhiteSpace(repoPath)) return status;
 
-            // 1. Uncommitted changes count (staged + unstaged + untracked)
-            var (statusSuccess, statusOutput, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall");
+            // Each of these is a separate git.exe process spawn, which has real wall-clock
+            // overhead on top of whatever it actually computes - status and the upstream check
+            // are independent, so run them concurrently rather than one after another.
+            var statusTask = RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall");
+            var upstreamTask = RunGitCommandAsync(repoPath, "rev-parse --abbrev-ref @{u}");
+            await Task.WhenAll(statusTask, upstreamTask).ConfigureAwait(false);
+
+            var (statusSuccess, statusOutput, _) = await statusTask.ConfigureAwait(false);
             if (statusSuccess && !string.IsNullOrWhiteSpace(statusOutput))
             {
                 var lines = statusOutput.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 status.UncommittedCount = lines.Length;
             }
 
-            // 2. Upstream branch info
-            var (upSuccess, upOutput, _) = await RunGitCommandAsync(repoPath, "rev-parse --abbrev-ref @{u}");
+            var (upSuccess, upOutput, _) = await upstreamTask.ConfigureAwait(false);
             if (upSuccess && !string.IsNullOrWhiteSpace(upOutput) && !upOutput.Contains("fatal:"))
             {
                 status.HasUpstream = true;
                 status.UpstreamBranch = upOutput.Trim();
 
-                // 3. Commits ahead (to push)
-                var (aheadSuccess, aheadOutput, _) = await RunGitCommandAsync(repoPath, "rev-list --count @{u}..HEAD");
-                if (aheadSuccess && int.TryParse(aheadOutput.Trim(), out var ahead))
+                // One process spawn instead of two: --left-right --count on the triple-dot range
+                // gives "<only in @{u}>\t<only in HEAD>" - i.e. behind and ahead - together.
+                var (aheadBehindSuccess, aheadBehindOutput, _) = await RunGitCommandAsync(repoPath, "rev-list --left-right --count @{u}...HEAD").ConfigureAwait(false);
+                if (aheadBehindSuccess)
                 {
-                    status.AheadCount = ahead;
-                }
-
-                // 4. Commits behind (to pull)
-                var (behindSuccess, behindOutput, _) = await RunGitCommandAsync(repoPath, "rev-list --count HEAD..@{u}");
-                if (behindSuccess && int.TryParse(behindOutput.Trim(), out var behind))
-                {
-                    status.BehindCount = behind;
+                    var parts = aheadBehindOutput.Trim().Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 2)
+                    {
+                        if (int.TryParse(parts[0], out var behind)) status.BehindCount = behind;
+                        if (int.TryParse(parts[1], out var ahead)) status.AheadCount = ahead;
+                    }
                 }
             }
 
@@ -91,7 +95,7 @@ namespace Girt.Services
             var result = new WorkingTreeChanges();
             if (string.IsNullOrWhiteSpace(repoPath)) return result;
 
-            var (success, output, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall").ConfigureAwait(false);
             if (!success || string.IsNullOrWhiteSpace(output)) return result;
 
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -163,26 +167,26 @@ namespace Girt.Services
         public async Task<(bool Success, string Output)> StageFileAsync(string repoPath, string filePath)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"add -- \"{cleanPath}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"add -- \"{cleanPath}\"").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
         public async Task<(bool Success, string Output)> UnstageFileAsync(string repoPath, string filePath)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"restore --staged -- \"{cleanPath}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"restore --staged -- \"{cleanPath}\"").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
         public async Task<(bool Success, string Output)> StageAllAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "add -A");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "add -A").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
         public async Task<(bool Success, string Output)> UnstageAllAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "restore --staged .");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "restore --staged .").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
@@ -193,7 +197,7 @@ namespace Girt.Services
             var fullPath = Path.Combine(repoPath, filePath);
             if (File.Exists(fullPath))
             {
-                var (isUntrackedSuccess, untrackedOutput, _) = await RunGitCommandAsync(repoPath, $"ls-files --error-unmatch \"{cleanPath}\"");
+                var (isUntrackedSuccess, untrackedOutput, _) = await RunGitCommandAsync(repoPath, $"ls-files --error-unmatch \"{cleanPath}\"").ConfigureAwait(false);
                 if (!isUntrackedSuccess)
                 {
                     // Untracked file -> delete it
@@ -209,7 +213,7 @@ namespace Girt.Services
                 }
             }
 
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"restore -- \"{cleanPath}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"restore -- \"{cleanPath}\"").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
@@ -218,8 +222,8 @@ namespace Girt.Services
             var tempMsgFile = Path.Combine(Path.GetTempPath(), $"girt_commit_{Guid.NewGuid():N}.txt");
             try
             {
-                await File.WriteAllTextAsync(tempMsgFile, message, Encoding.UTF8);
-                var (success, output, error) = await RunGitCommandAsync(repoPath, $"commit -F \"{tempMsgFile}\"");
+                await File.WriteAllTextAsync(tempMsgFile, message, Encoding.UTF8).ConfigureAwait(false);
+                var (success, output, error) = await RunGitCommandAsync(repoPath, $"commit -F \"{tempMsgFile}\"").ConfigureAwait(false);
                 return (success, (output + "\n" + error).Trim());
             }
             finally
@@ -236,12 +240,12 @@ namespace Girt.Services
             var cleanPath = filePath.Replace("\"", "\\\"");
             if (isStaged)
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} --cached -- \"{cleanPath}\"");
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} --cached -- \"{cleanPath}\"").ConfigureAwait(false);
                 return success ? output : "";
             }
             else
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} -- \"{cleanPath}\"");
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} -- \"{cleanPath}\"").ConfigureAwait(false);
                 if (success && !string.IsNullOrWhiteSpace(output))
                 {
                     return output;
@@ -253,7 +257,7 @@ namespace Girt.Services
                 {
                     try
                     {
-                        var content = await File.ReadAllTextAsync(fullPath);
+                        var content = await File.ReadAllTextAsync(fullPath).ConfigureAwait(false);
                         var sb = new StringBuilder();
                         sb.AppendLine($"diff --git a/{filePath} b/{filePath}");
                         sb.AppendLine("new file mode 100644");
@@ -277,25 +281,26 @@ namespace Girt.Services
 
         public async Task<(bool Success, string Output)> PushAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "push");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "push").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
-        public async Task<(bool Success, string Output)> PullAsync(string repoPath)
+        public async Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "pull");
+            var args = rebase ? "pull --rebase" : "pull";
+            var (success, output, error) = await RunGitCommandAsync(repoPath, args).ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
         public async Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "fetch --all --prune");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "fetch --all --prune").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
         public async Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2)
         {
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"merge-base \"{ref1}\" \"{ref2}\"");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"merge-base \"{ref1}\" \"{ref2}\"").ConfigureAwait(false);
             if (success && !string.IsNullOrWhiteSpace(output))
             {
                 return output.Trim();
@@ -303,7 +308,7 @@ namespace Girt.Services
             return null;
         }
 
-        public async Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false)
+        public async Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, GitIgnoreTarget target = GitIgnoreTarget.File)
         {
             if (string.IsNullOrWhiteSpace(repoPath) || string.IsNullOrWhiteSpace(filePath))
             {
@@ -315,7 +320,7 @@ namespace Girt.Services
                 var gitIgnorePath = Path.Combine(repoPath, ".gitignore");
                 var pattern = filePath.Replace('\\', '/');
 
-                if (ignoreByExtension)
+                if (target == GitIgnoreTarget.Extension)
                 {
                     var ext = Path.GetExtension(filePath);
                     if (!string.IsNullOrEmpty(ext))
@@ -323,9 +328,15 @@ namespace Girt.Services
                         pattern = $"*{ext}";
                     }
                 }
+                else if (target == GitIgnoreTarget.Folder)
+                {
+                    // filePath is already the exact folder the caller picked (see
+                    // GitWorkingFile.AncestorFolders) - just normalize the trailing slash.
+                    pattern = $"{pattern.TrimEnd('/')}/";
+                }
 
                 var existing = File.Exists(gitIgnorePath)
-                    ? (await File.ReadAllLinesAsync(gitIgnorePath)).Select(l => l.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    ? (await File.ReadAllLinesAsync(gitIgnorePath).ConfigureAwait(false)).Select(l => l.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
                     : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 if (!existing.Contains(pattern))
@@ -333,11 +344,15 @@ namespace Girt.Services
                     var prefix = (File.Exists(gitIgnorePath) && new FileInfo(gitIgnorePath).Length > 0 && !File.ReadAllText(gitIgnorePath).EndsWith('\n'))
                         ? "\n"
                         : "";
-                    await File.AppendAllTextAsync(gitIgnorePath, $"{prefix}{pattern}\n", Encoding.UTF8);
+                    await File.AppendAllTextAsync(gitIgnorePath, $"{prefix}{pattern}\n", Encoding.UTF8).ConfigureAwait(false);
                 }
 
-                // Also unstage cached tracking if file was in index
-                await RunGitCommandAsync(repoPath, $"rm --cached -- \"{filePath.Replace("\"", "\\\"")}\"");
+                // Also unstage cached tracking - recursively for a folder, since it may
+                // contain many already-tracked files that would now match the new rule.
+                var rmArgs = target == GitIgnoreTarget.Folder
+                    ? $"rm -r --cached -- \"{filePath.Replace("\"", "\\\"")}\""
+                    : $"rm --cached -- \"{filePath.Replace("\"", "\\\"")}\"";
+                await RunGitCommandAsync(repoPath, rmArgs).ConfigureAwait(false);
 
                 return (true, $"Added '{pattern}' to .gitignore");
             }
@@ -350,44 +365,56 @@ namespace Girt.Services
         public async Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null)
         {
             var msgArg = string.IsNullOrWhiteSpace(message) ? "" : $" -m \"{message.Replace("\"", "\\\"")}\"";
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push --staged{msgArg}");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push --staged{msgArg}").ConfigureAwait(false);
             if (!success)
             {
                 // Fallback for git versions that don't support --staged
-                (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push -k{msgArg}");
+                (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push -k{msgArg}").ConfigureAwait(false);
             }
             return (success, success ? (string.IsNullOrEmpty(output) ? "Stashed staged changes" : output.Trim()) : error);
         }
 
         public async Task<(bool Success, string Output)> StashPopAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash pop");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash pop").ConfigureAwait(false);
             return (success, success ? (string.IsNullOrEmpty(output) ? "Popped top stash" : output.Trim()) : error);
         }
 
         public async Task<(bool Success, string Output)> StashApplyAsync(string repoPath)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash apply");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "stash apply").ConfigureAwait(false);
             return (success, success ? (string.IsNullOrEmpty(output) ? "Applied top stash" : output.Trim()) : error);
         }
 
         public async Task<int> GetStashCountAsync(string repoPath)
         {
-            var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list").ConfigureAwait(false);
             if (!success || string.IsNullOrWhiteSpace(output)) return 0;
             return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         }
 
+        public async Task<string?> GetTopStashDescriptionAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list -1").ConfigureAwait(false);
+            if (!success || string.IsNullOrWhiteSpace(output)) return null;
+            var firstLine = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            return firstLine?.Trim();
+        }
+
         public async Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"revert --no-edit \"{commitHash}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"revert --no-edit \"{commitHash}\"").ConfigureAwait(false);
             var combined = (output + "\n" + error).Trim();
             return (success, combined);
         }
 
         public async Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"cherry-pick \"{commitHash}\"");
+            // --no-commit applies the change to the working tree/index without committing it -
+            // cherry-picked changes land as a local, reviewable, editable change first, the same
+            // as any other change the user makes, rather than a commit appearing out of nowhere
+            // that's immediately "ready to push" before anyone chose to commit it.
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"cherry-pick --no-commit \"{commitHash}\"").ConfigureAwait(false);
             var combined = (output + "\n" + error).Trim();
             return (success, combined);
         }
@@ -397,14 +424,14 @@ namespace Girt.Services
             var flags = "";
             if (squash) flags += " --squash";
             if (noFf) flags += " --no-ff";
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"merge{flags} \"{targetRef}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"merge{flags} \"{targetRef}\"").ConfigureAwait(false);
             var combined = (output + "\n" + error).Trim();
             return (success, combined);
         }
 
         public async Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef)
         {
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"rebase \"{targetRef}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"rebase \"{targetRef}\"").ConfigureAwait(false);
             var combined = (output + "\n" + error).Trim();
             return (success, combined);
         }
@@ -419,7 +446,7 @@ namespace Girt.Services
             };
 
             var cleanTarget = string.IsNullOrWhiteSpace(targetRef) ? "HEAD~1" : targetRef.Trim();
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"reset {flag} \"{cleanTarget}\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"reset {flag} \"{cleanTarget}\"").ConfigureAwait(false);
             var combined = (output + "\n" + error).Trim();
             return (success, combined);
         }
@@ -428,7 +455,7 @@ namespace Girt.Services
         {
             var branches = new List<GitBranch>();
             var format = "%(HEAD)%09%(refname)%09%(upstream:short)%09%(objectname)%09%(contents:subject)";
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"for-each-ref --format=\"{format}\" refs/heads refs/remotes");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"for-each-ref --format=\"{format}\" refs/heads refs/remotes").ConfigureAwait(false);
 
             if (!success || string.IsNullOrWhiteSpace(output))
             {
@@ -489,14 +516,14 @@ namespace Girt.Services
         {
             var commits = new List<GitCommit>();
             var format = "%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cr%x1f%D%x1f%s%x1f%b%x1e";
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"log --all --topo-order --format=format:\"{format}\" -n {maxCount}");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"log --all --topo-order --format=format:\"{format}\" -n {maxCount}").ConfigureAwait(false);
 
             if (!success || string.IsNullOrWhiteSpace(output))
             {
                 return commits;
             }
 
-            var currentHead = await GetCurrentBranchAsync(repoPath);
+            var currentHead = await GetCurrentBranchAsync(repoPath).ConfigureAwait(false);
             var rawCommits = output.Split(RecordSeparator);
             var rowIndex = 0;
 
@@ -545,12 +572,37 @@ namespace Girt.Services
 
         public async Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash)
         {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --numstat --format=format: \"{commitHash}\"").ConfigureAwait(false);
+            return success ? ParseNumstatOutput(output) : new List<GitFileDiff>();
+        }
+
+        public async Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --unified={FullDiffContextLines} \"{commitHash}\" -- \"{cleanPath}\"").ConfigureAwait(false);
+            return success ? output : "";
+        }
+
+        // Everything reachable from HEAD but not yet from the upstream branch - i.e. exactly
+        // what a `git push` would send. Callers should only invoke this once they know an
+        // upstream exists (GitRepoStatus.HasUpstream), since "@{u}" fails without one.
+        public async Task<IReadOnlyList<GitFileDiff>> GetUnpushedDiffAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "diff --numstat @{u}..HEAD").ConfigureAwait(false);
+            return success ? ParseNumstatOutput(output) : new List<GitFileDiff>();
+        }
+
+        public async Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} @{{u}}..HEAD -- \"{cleanPath}\"").ConfigureAwait(false);
+            return success ? output : "";
+        }
+
+        private static List<GitFileDiff> ParseNumstatOutput(string output)
+        {
             var files = new List<GitFileDiff>();
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --numstat --format=format: \"{commitHash}\"");
-            if (!success || string.IsNullOrWhiteSpace(output))
-            {
-                return files;
-            }
+            if (string.IsNullOrWhiteSpace(output)) return files;
 
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var line in lines)
@@ -594,26 +646,19 @@ namespace Girt.Services
             return files;
         }
 
-        public async Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath)
-        {
-            var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --unified={FullDiffContextLines} \"{commitHash}\" -- \"{cleanPath}\"");
-            return success ? output : "";
-        }
-
         public async Task<(bool Success, string Output)> CheckoutBranchAsync(string repoPath, string branchName)
         {
             if (branchName.StartsWith("origin/"))
             {
                 var localName = branchName.Substring("origin/".Length);
-                var trackResult = await RunGitCommandAsync(repoPath, $"checkout --track \"{branchName}\"");
+                var trackResult = await RunGitCommandAsync(repoPath, $"checkout --track \"{branchName}\"").ConfigureAwait(false);
                 if (trackResult.Success) return (true, trackResult.Output);
                 
-                var directResult = await RunGitCommandAsync(repoPath, $"checkout \"{localName}\"");
+                var directResult = await RunGitCommandAsync(repoPath, $"checkout \"{localName}\"").ConfigureAwait(false);
                 return (directResult.Success, directResult.Output + "\n" + directResult.Error);
             }
 
-            var result = await RunGitCommandAsync(repoPath, $"checkout \"{branchName}\"");
+            var result = await RunGitCommandAsync(repoPath, $"checkout \"{branchName}\"").ConfigureAwait(false);
             var combined = (result.Output + "\n" + result.Error).Trim();
             return (result.Success, combined);
         }
@@ -624,7 +669,7 @@ namespace Girt.Services
                 ? $"checkout -b \"{branchName}\""
                 : $"checkout -b \"{branchName}\" \"{startPoint}\"";
 
-            var result = await RunGitCommandAsync(repoPath, cmd);
+            var result = await RunGitCommandAsync(repoPath, cmd).ConfigureAwait(false);
             var combined = (result.Output + "\n" + result.Error).Trim();
             return (result.Success, combined);
         }
@@ -632,7 +677,7 @@ namespace Girt.Services
         public async Task<(bool Success, string Output)> DeleteBranchAsync(string repoPath, string branchName, bool force = false)
         {
             var flag = force ? "-D" : "-d";
-            var result = await RunGitCommandAsync(repoPath, $"branch {flag} \"{branchName}\"");
+            var result = await RunGitCommandAsync(repoPath, $"branch {flag} \"{branchName}\"").ConfigureAwait(false);
             var combined = (result.Output + "\n" + result.Error).Trim();
             return (result.Success, combined);
         }
@@ -697,6 +742,12 @@ namespace Girt.Services
             return badges;
         }
 
+        // Every git invocation goes through here, so it's the one place that can tell the
+        // difference between "the working tree/git-state watchers just saw OUR OWN write"
+        // (e.g. staging a file) and a genuinely external change (another tool, another process).
+        private static DateTime _lastCommandCompletedUtc = DateTime.MinValue;
+        public DateTime LastCommandCompletedUtc => _lastCommandCompletedUtc;
+
         private static async Task<(bool Success, string Output, string Error)> RunGitCommandAsync(string workingDirectory, string arguments)
         {
             try
@@ -731,12 +782,14 @@ namespace Girt.Services
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                await process.WaitForExitAsync();
+                await process.WaitForExitAsync().ConfigureAwait(false);
 
+                _lastCommandCompletedUtc = DateTime.UtcNow;
                 return (process.ExitCode == 0, outputBuilder.ToString(), errorBuilder.ToString());
             }
             catch (Exception ex)
             {
+                _lastCommandCompletedUtc = DateTime.UtcNow;
                 return (false, string.Empty, ex.Message);
             }
         }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Girt.Models;
@@ -6,11 +7,14 @@ namespace Girt.Services
 {
     public interface IGitService
     {
+        DateTime LastCommandCompletedUtc { get; }
         Task<string?> GetRepositoryRootAsync(string directoryPath);
         Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath);
         Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000);
         Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash);
         Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath);
+        Task<IReadOnlyList<GitFileDiff>> GetUnpushedDiffAsync(string repoPath);
+        Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath);
         Task<(bool Success, string Output)> CheckoutBranchAsync(string repoPath, string branchName);
         Task<(bool Success, string Output)> CreateBranchAsync(string repoPath, string branchName, string? startPoint = null);
         Task<(bool Success, string Output)> DeleteBranchAsync(string repoPath, string branchName, bool force = false);
@@ -28,14 +32,15 @@ namespace Girt.Services
         Task<(bool Success, string Output)> CommitAsync(string repoPath, string message);
         Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
-        Task<(bool Success, string Output)> PullAsync(string repoPath);
+        Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false);
         Task<(bool Success, string Output)> FetchAllAsync(string repoPath);
         Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2);
-        Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false);
+        Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, GitIgnoreTarget target = GitIgnoreTarget.File);
         Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null);
         Task<(bool Success, string Output)> StashPopAsync(string repoPath);
         Task<(bool Success, string Output)> StashApplyAsync(string repoPath);
         Task<int> GetStashCountAsync(string repoPath);
+        Task<string?> GetTopStashDescriptionAsync(string repoPath);
         Task<(bool Success, string Output)> RevertCommitAsync(string repoPath, string commitHash);
         Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash);
         Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false);

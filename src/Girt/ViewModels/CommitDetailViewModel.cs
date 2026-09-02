@@ -37,6 +37,17 @@ namespace Girt.ViewModels
 
         public async Task SetCommitAsync(GitCommit? commit)
         {
+            // A background refresh reloads commits as entirely new GitCommit instances, so this
+            // can be called again for "the same" commit (by hash) purely because of that reload,
+            // not because the user selected something different. Skip re-fetching/re-parsing its
+            // diff in that case - it's already showing, and doing this again on every silent
+            // refresh was a real, needless cost.
+            if (commit != null && Commit != null && commit.Hash == Commit.Hash)
+            {
+                Commit = commit;
+                return;
+            }
+
             Commit = commit;
             ChangedFiles.Clear();
             DiffLines.Clear();
@@ -116,7 +127,7 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, ignoreByExtension: false);
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, GitIgnoreTarget.File);
             if (success)
             {
                 MessageBox.Show($"Added '{file.Path}' to .gitignore", ".gitignore Updated", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -132,11 +143,26 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, ignoreByExtension: true);
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, file.Path, GitIgnoreTarget.Extension);
             if (success)
             {
                 var ext = System.IO.Path.GetExtension(file.Path);
                 MessageBox.Show($"Added '*{ext}' to .gitignore", ".gitignore Updated", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        [CommunityToolkit.Mvvm.Input.RelayCommand]
+        public async Task IgnoreFolderAsync(string? folderPath)
+        {
+            if (string.IsNullOrEmpty(folderPath)) return;
+
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var (success, msg) = await _gitService.AddToGitIgnoreAsync(repoPath, folderPath, GitIgnoreTarget.Folder);
+            if (success)
+            {
+                MessageBox.Show($"Added '{folderPath}/' to .gitignore", ".gitignore Updated", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
     }

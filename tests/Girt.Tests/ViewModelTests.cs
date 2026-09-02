@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -22,12 +23,15 @@ namespace Girt.Tests
         public GitResetMode? LastResetMode { get; set; }
         public string? LastCommitMessage { get; set; }
         public bool FetchAllCalled { get; set; }
+        public DateTime LastCommandCompletedUtc { get; set; } = DateTime.MinValue;
 
         public Task<string?> GetRepositoryRootAsync(string directoryPath) => Task.FromResult(RepoRoot);
         public Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitBranch>>(Branches);
         public Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000) => Task.FromResult<IReadOnlyList<GitCommit>>(Commits);
         public Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash) => Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffFiles);
         public Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath) => Task.FromResult(RawDiff);
+        public Task<IReadOnlyList<GitFileDiff>> GetUnpushedDiffAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffFiles);
+        public Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath) => Task.FromResult(RawDiff);
         public Task<GitRepoStatus> GetRepoStatusAsync(string repoPath) => Task.FromResult(Status);
         public Task<WorkingTreeChanges> GetWorkingTreeChangesAsync(string repoPath) => Task.FromResult(Changes);
         
@@ -102,19 +106,33 @@ namespace Girt.Tests
         {
             LastCommitMessage = message;
             Changes.StagedFiles.Clear();
+
+            // Mirrors what a real `git commit` does to the log, so callers exercising
+            // MainViewModel's "fetch just the new commit and splice it in" path (GetCommitsAsync
+            // with maxCount: 1) see something realistic rather than a stale, unchanged list.
+            var parentHash = Commits.Count > 0 ? Commits[0].Hash : null;
+            Commits.Insert(0, new GitCommit
+            {
+                Hash = $"fakecommit{Commits.Count}",
+                Subject = message,
+                ParentHashes = parentHash != null ? new List<string> { parentHash } : new List<string>(),
+                AuthorName = "Test Author",
+                Date = DateTimeOffset.UtcNow
+            });
+
             return Task.FromResult((true, "Committed"));
         }
 
         public Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged) => Task.FromResult(RawDiff);
         public Task<(bool Success, string Output)> PushAsync(string repoPath) => Task.FromResult((true, "Pushed"));
-        public Task<(bool Success, string Output)> PullAsync(string repoPath) => Task.FromResult((true, "Pulled"));
+        public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult((true, "Pulled"));
         public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
             FetchAllCalled = true;
             return Task.FromResult((true, "Fetched all remotes"));
         }
         public Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2) => Task.FromResult<string?>("root123");
-        public Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, bool ignoreByExtension = false)
+        public Task<(bool Success, string Output)> AddToGitIgnoreAsync(string repoPath, string filePath, GitIgnoreTarget target = GitIgnoreTarget.File)
         {
             Changes.UnstagedFiles.RemoveAll(f => f.Path == filePath);
             return Task.FromResult((true, "Ignored"));
@@ -122,6 +140,7 @@ namespace Girt.Tests
 
         public int StashCount { get; set; }
         public Task<int> GetStashCountAsync(string repoPath) => Task.FromResult(StashCount);
+        public Task<string?> GetTopStashDescriptionAsync(string repoPath) => Task.FromResult<string?>(StashCount > 0 ? "stash@{0}: WIP on test" : null);
         public Task<(bool Success, string Output)> StashStagedAsync(string repoPath, string? message = null)
         {
             StashCount++;
@@ -184,13 +203,16 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { });
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
 
             Assert.Equal(3, vm.FilteredLocalBranches.Count);
             Assert.Single(vm.FilteredRemoteBranches);
 
+            // Typing is debounced (see OnFilterTextChanged) so a real keystroke doesn't
+            // re-filter immediately; ApplyFilter() forces the same pass synchronously here.
             vm.FilterText = "login";
+            vm.ApplyFilter();
             Assert.Single(vm.FilteredLocalBranches);
             Assert.Equal("feature/login", vm.FilteredLocalBranches[0].Name);
             Assert.Empty(vm.FilteredRemoteBranches);
@@ -212,7 +234,7 @@ namespace Girt.Tests
             };
 
             var savedValues = new List<bool>();
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, v => savedValues.Add(v));
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, v => savedValues.Add(v), (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
 
             // Folders (in first-seen order) come first, each followed by its branches
@@ -252,6 +274,93 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task BranchListViewModel_TogglePinBranch_MovesToTopOfFlatListAndIntoPinnedFolder()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "feature/BB-100-foo" },
+                    new() { Name = "bugfix/BB-300-baz" },
+                    new() { Name = "main" }
+                }
+            };
+
+            var savedRepoPaths = new List<string>();
+            var savedPinnedSets = new List<List<string>>();
+            var vm = new BranchListViewModel(
+                fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask,
+                true, _ => { }, (_, _) => { },
+                _ => new HashSet<string>(),
+                (repoPath, names) =>
+                {
+                    savedRepoPaths.Add(repoPath);
+                    savedPinnedSets.Add(names.ToList());
+                });
+            await vm.LoadBranchesAsync();
+
+            var target = vm.FilteredLocalBranches.Single(b => b.Name == "bugfix/BB-300-baz");
+            vm.TogglePinBranchCommand.Execute(target);
+
+            // Pinned branch floats to the top of the flat list.
+            Assert.True(vm.FilteredLocalBranches[0].IsPinned);
+            Assert.Equal("bugfix/BB-300-baz", vm.FilteredLocalBranches[0].Name);
+
+            // Persisted immediately against the current repo path.
+            Assert.Equal(@"C:\FakeRepo", savedRepoPaths.Last());
+            Assert.Contains("bugfix/BB-300-baz", savedPinnedSets.Last());
+
+            // A synthetic "Pinned" folder appears first in the tree, in addition to (not
+            // instead of) the branch's normal folder position.
+            var pinnedFolder = vm.LocalBranchTree[0];
+            Assert.True(pinnedFolder.IsFolder);
+            Assert.Equal("Pinned", pinnedFolder.DisplayName);
+            var pinnedLeaf = vm.LocalBranchTree[1];
+            Assert.False(pinnedLeaf.IsFolder);
+            Assert.Equal("bugfix/BB-300-baz", pinnedLeaf.Branch?.Name);
+            Assert.Contains(vm.LocalBranchTree, i => !i.IsFolder && i.DisplayName == "BB-300-baz" && i.Branch?.Name == "bugfix/BB-300-baz");
+
+            // Unpinning removes it from the top and from the Pinned folder.
+            vm.TogglePinBranchCommand.Execute(target);
+            Assert.False(vm.FilteredLocalBranches.First(b => b.Name == "bugfix/BB-300-baz").IsPinned);
+            Assert.DoesNotContain(vm.LocalBranchTree, i => i.IsFolder && i.DisplayName == "Pinned");
+        }
+
+        [Fact]
+        public async Task BranchListViewModel_TogglePinBranch_InFlatView_RepositionsWithoutRebuildingList()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "feature/BB-100-foo" },
+                    new() { Name = "bugfix/BB-300-baz" },
+                    new() { Name = "main" }
+                }
+            };
+
+            // GroupBranchesIntoFolders = false: exercises the fast Move-based path rather than
+            // the full folder-tree rebuild path covered by the test above.
+            var vm = new BranchListViewModel(
+                fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask,
+                false, _ => { }, (_, _) => { },
+                _ => new HashSet<string>(), (_, _) => { });
+            await vm.LoadBranchesAsync();
+
+            var originalInstance = vm.FilteredLocalBranches.Single(b => b.Name == "bugfix/BB-300-baz");
+            vm.TogglePinBranchCommand.Execute(originalInstance);
+
+            // Same instance floats to the top - Move repositions it rather than the list being
+            // rebuilt from a fresh copy.
+            Assert.Same(originalInstance, vm.FilteredLocalBranches[0]);
+            Assert.True(vm.FilteredLocalBranches[0].IsPinned);
+
+            vm.TogglePinBranchCommand.Execute(originalInstance);
+            Assert.False(originalInstance.IsPinned);
+            Assert.DoesNotContain(vm.FilteredLocalBranches, b => b.IsPinned);
+        }
+
+        [Fact]
         public async Task BranchListViewModel_ToggleBranchFolder_CollapsesAndExpandsJustThatFolder()
         {
             var fakeGit = new FakeGitService
@@ -265,7 +374,7 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, _ => { });
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
 
             // Fully expanded: 2 folders + 4 leaves (2 under feature, 1 under bugfix, 1 root-level).
@@ -304,7 +413,7 @@ namespace Girt.Tests
                 }
             };
 
-            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { });
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
             await vm.LoadBranchesAsync();
             Assert.Empty(vm.NewBranches);
             Assert.False(vm.HasNewBranches);
@@ -321,6 +430,63 @@ namespace Girt.Tests
             await vm.CheckoutBranchAsync(vm.NewBranches[0]);
             Assert.Empty(vm.NewBranches);
             Assert.False(vm.HasNewBranches);
+        }
+
+        [Fact]
+        public async Task BranchListViewModel_ExternalCheckoutOfNewBranch_RemovesItFromNewBranchesOnReload()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "main", IsRemote = false },
+                    new() { Name = "origin/main", IsRemote = true, RemoteName = "origin" }
+                }
+            };
+
+            var vm = new BranchListViewModel(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, false, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
+            await vm.LoadBranchesAsync();
+
+            fakeGit.Branches.Add(new GitBranch { Name = "origin/feature/cool-stuff", IsRemote = true, RemoteName = "origin" });
+            await vm.LoadBranchesAsync();
+            Assert.Single(vm.NewBranches);
+
+            // Simulate the branch being checked out by an external tool (not via
+            // CheckoutBranchAsync) - a new local branch simply appears on the next reload.
+            fakeGit.Branches.Add(new GitBranch { Name = "feature/cool-stuff", IsRemote = false });
+            await vm.LoadBranchesAsync();
+
+            Assert.Empty(vm.NewBranches);
+            Assert.False(vm.HasNewBranches);
+        }
+
+        [Fact]
+        public async Task BranchListViewModel_SwitchingRepos_DoesNotFloodNewBranches()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch> { new() { Name = "main" }, new() { Name = "develop" } }
+            };
+
+            var currentRepo = @"C:\RepoA";
+            var vm = new BranchListViewModel(fakeGit, () => currentRepo, () => Task.CompletedTask, false, _ => { }, (_, _) => { }, _ => new HashSet<string>(), (_, _) => { });
+
+            await vm.LoadBranchesAsync();
+            Assert.Empty(vm.NewBranches);
+
+            // Switching to a different repo (with an entirely different branch set) shouldn't
+            // treat every one of its branches as "new".
+            currentRepo = @"C:\RepoB";
+            fakeGit.Branches = new List<GitBranch> { new() { Name = "main" }, new() { Name = "feature/other-repo-thing" } };
+            await vm.LoadBranchesAsync();
+            Assert.Empty(vm.NewBranches);
+            Assert.False(vm.HasNewBranches);
+
+            // A genuinely new branch discovered within the SAME repo still gets flagged.
+            fakeGit.Branches.Add(new GitBranch { Name = "feature/actually-new" });
+            await vm.LoadBranchesAsync();
+            Assert.Single(vm.NewBranches);
+            Assert.Equal("feature/actually-new", vm.NewBranches[0].Name);
         }
 
         [Fact]
@@ -545,6 +711,113 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task CommitHistoryViewModel_SelectedCommit_PreservedAcrossReloadWithFreshInstances()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit>
+                {
+                    new() { Hash = "bbb222", Subject = "Second" },
+                    new() { Hash = "aaa111", Subject = "First" }
+                }
+            };
+
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            await vm.LoadCommitsAsync();
+
+            vm.SelectedCommit = vm.FilteredCommits.Single(c => c.Hash == "aaa111");
+
+            // A real refresh re-parses `git log` from scratch, producing entirely new GitCommit
+            // instances for the same underlying commits - simulate that here rather than
+            // reusing the same object references.
+            fakeGit.Commits = new List<GitCommit>
+            {
+                new() { Hash = "bbb222", Subject = "Second" },
+                new() { Hash = "aaa111", Subject = "First" }
+            };
+            await vm.LoadCommitsAsync();
+
+            // Selection should still logically be "aaa111" - not silently reset to the top
+            // commit just because the object instances changed.
+            Assert.Equal("aaa111", vm.SelectedCommit?.Hash);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_IncrementalReload_ReusesUnchangedTailAndLaysOutOnlyNewCommits()
+        {
+            var top = new GitCommit { Hash = "top1", Subject = "Top", ParentHashes = new List<string> { "mid1" } };
+            var mid = new GitCommit { Hash = "mid1", Subject = "Mid", ParentHashes = new List<string> { "root1" } };
+            var root = new GitCommit { Hash = "root1", Subject = "Root" };
+
+            var fakeGit = new FakeGitService { Commits = new List<GitCommit> { top, mid, root } };
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            await vm.LoadCommitsAsync();
+
+            Assert.Equal(3, vm.FilteredCommits.Count);
+            var oldTopInstance = vm.FilteredCommits[0];
+            var oldMidInstance = vm.FilteredCommits[1];
+            var oldRootInstance = vm.FilteredCommits[2];
+            Assert.Equal(0, oldTopInstance.LaneIndex);
+
+            // Simulate a real refresh: one brand-new commit lands on top, and the rest of
+            // history is re-parsed into entirely new object instances, same as a real `git log`
+            // reparse would produce.
+            var newTop = new GitCommit { Hash = "top2", Subject = "New top", ParentHashes = new List<string> { "top1" } };
+            fakeGit.Commits = new List<GitCommit>
+            {
+                newTop,
+                new() { Hash = "top1", Subject = "Top", ParentHashes = new List<string> { "mid1" } },
+                new() { Hash = "mid1", Subject = "Mid", ParentHashes = new List<string> { "root1" } },
+                new() { Hash = "root1", Subject = "Root" }
+            };
+
+            await vm.LoadCommitsAsync();
+
+            Assert.Equal(4, vm.FilteredCommits.Count);
+            Assert.Equal("top2", vm.FilteredCommits[0].Hash);
+            Assert.Equal(0, vm.FilteredCommits[0].RowIndex);
+            Assert.Equal(0, vm.FilteredCommits[0].LaneIndex);
+
+            // The old rows are the SAME instances as before (not the fresh parse's objects) -
+            // proof the tail was reused rather than relaid-out.
+            Assert.Same(oldTopInstance, vm.FilteredCommits[1]);
+            Assert.Same(oldMidInstance, vm.FilteredCommits[2]);
+            Assert.Same(oldRootInstance, vm.FilteredCommits[3]);
+
+            // Row indices shifted by the one new commit prepended; lane assignment untouched.
+            Assert.Equal(1, oldTopInstance.RowIndex);
+            Assert.Equal(2, oldMidInstance.RowIndex);
+            Assert.Equal(3, oldRootInstance.RowIndex);
+            Assert.Equal(0, oldTopInstance.LaneIndex);
+
+            // The new commit connects down into the (reused) old top commit's lane.
+            Assert.Single(vm.FilteredCommits[0].Connections);
+            Assert.Equal(0, vm.FilteredCommits[0].Connections[0].FromLane);
+            Assert.Equal(0, vm.FilteredCommits[0].Connections[0].ToLane);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_IncrementalReload_FallsBackToFullRelayoutWhenHistoryDiverges()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { new() { Hash = "top1", Subject = "Top" } }
+            };
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            await vm.LoadCommitsAsync();
+
+            // Simulate switching to a completely unrelated branch - nothing in common with
+            // what was previously loaded, so the previous top commit is never found.
+            fakeGit.Commits = new List<GitCommit> { new() { Hash = "other1", Subject = "Other" } };
+            await vm.LoadCommitsAsync();
+
+            Assert.Single(vm.FilteredCommits);
+            Assert.Equal("other1", vm.FilteredCommits[0].Hash);
+            Assert.Equal(0, vm.FilteredCommits[0].RowIndex);
+            Assert.Equal(0, vm.FilteredCommits[0].LaneIndex);
+        }
+
+        [Fact]
         public async Task MainViewModel_ResetHead_ExecutesWithCorrectModeAndTarget()
         {
             var fakeGit = new FakeGitService();
@@ -580,11 +853,20 @@ namespace Girt.Tests
 
             Assert.Equal(2, vm.UnstagedFiles.Count);
             Assert.Empty(vm.StagedFiles);
+            Assert.Equal(2, vm.TotalChangesCount);
 
             // Stage one file
             await vm.StageFileAsync(vm.UnstagedFiles[0]);
             Assert.Single(vm.StagedFiles);
             Assert.Single(vm.UnstagedFiles);
+
+            // TotalChangesCount/HasStagedFiles have no notification of their own - they only
+            // stay right because StagedFiles/UnstagedFiles' CollectionChanged is wired up to
+            // raise it. This is exactly the "11 changes but 0/0 shown" bug: staging is fully
+            // optimistic (no reload), so if that wiring broke, this would still read stale.
+            Assert.Equal(2, vm.TotalChangesCount);
+            Assert.True(vm.HasStagedFiles);
+            Assert.True(vm.HasUnstagedFiles);
 
             // Commit
             vm.CommitSubject = "Add app files";
@@ -592,6 +874,8 @@ namespace Girt.Tests
 
             Assert.Equal("Add app files", fakeGit.LastCommitMessage);
             Assert.Empty(vm.StagedFiles);
+            Assert.False(vm.HasStagedFiles);
+            Assert.Equal(1, vm.TotalChangesCount);
         }
 
         [Fact]
@@ -634,6 +918,7 @@ namespace Girt.Tests
             fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "Feature.cs", IsStaged = true });
 
             var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            vm.ConfirmStashAction = _ => true; // Pop shows a real MessageBox in production; auto-confirm here.
             await vm.LoadChangesAsync();
 
             Assert.True(vm.HasStagedFiles);
@@ -650,6 +935,37 @@ namespace Girt.Tests
             await vm.StashPopAsync();
             Assert.Equal(0, vm.StashCount);
             Assert.False(vm.HasStashes);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_StashPop_DoesNothingWhenNotConfirmed()
+        {
+            var fakeGit = new FakeGitService { StashCount = 1 };
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            vm.ConfirmStashAction = _ => false; // Simulates the user clicking "No".
+            await vm.LoadChangesAsync();
+
+            await vm.StashPopAsync();
+
+            Assert.Equal(1, fakeGit.StashCount); // Untouched - the confirmation gate must short-circuit before calling git.
+        }
+
+        [Fact]
+        public void GitWorkingFile_AncestorFolders_ListsEveryContainingFolderDeepestFirst()
+        {
+            var file = new GitWorkingFile { Path = ".codeidx/vault/Api/Test/AddMissing.cs" };
+
+            Assert.Equal(
+                new[] { ".codeidx/vault/Api/Test", ".codeidx/vault/Api", ".codeidx/vault", ".codeidx" },
+                file.AncestorFolders);
+        }
+
+        [Fact]
+        public void GitWorkingFile_AncestorFolders_EmptyForTopLevelFile()
+        {
+            var file = new GitWorkingFile { Path = "README.md" };
+
+            Assert.Empty(file.AncestorFolders);
         }
 
         [Fact]
@@ -694,6 +1010,98 @@ namespace Girt.Tests
             var branch = new GitBranch { Name = "feature/login", TipCommitHash = "def456" };
             mainVm.ShowResetDialog(branch);
             Assert.Equal("feature/login", mainVm.ResetTargetRef);
+        }
+
+        [Fact]
+        public async Task UnpushedChangesViewModel_OpenAsync_LoadsFilesAndDiffThenClose()
+        {
+            var fakeGit = new FakeGitService
+            {
+                DiffFiles = new List<GitFileDiff> { new() { Path = "src/Foo.cs", Additions = 3, Deletions = 1 } },
+                RawDiff = "diff --git a/src/Foo.cs b/src/Foo.cs\n@@ -1,1 +1,3 @@\n+added line\n"
+            };
+            var vm = new UnpushedChangesViewModel(fakeGit, () => @"C:\FakeRepo");
+
+            await vm.OpenAsync();
+
+            Assert.True(vm.IsOpen);
+            Assert.Single(vm.ChangedFiles);
+            Assert.Equal("src/Foo.cs", vm.SelectedFile?.Path);
+
+            vm.Close();
+            Assert.False(vm.IsOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_Commit_SplicesNewCommitLocallyAndBumpsAheadCountWithoutFullRefresh()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { new() { Hash = "root1", Subject = "Root" } },
+                Status = new GitRepoStatus { HasUpstream = true, AheadCount = 0, BehindCount = 0 }
+            };
+            fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = true });
+
+            var recentService = new RecentRepositoriesService();
+            var themeService = new ThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+            mainVm.RepoStatus = fakeGit.Status;
+            await mainVm.CommitHistory.LoadCommitsAsync();
+            await mainVm.WorkingChanges.LoadChangesAsync();
+
+            mainVm.WorkingChanges.CommitMessage = "New feature work";
+            await mainVm.WorkingChanges.CommitCommand.ExecuteAsync(null);
+
+            // The new commit shows up in the graph immediately, without a full reload having
+            // been asked for.
+            Assert.Equal("New feature work", mainVm.CommitHistory.FilteredCommits[0].Subject);
+            Assert.Equal("root1", mainVm.CommitHistory.FilteredCommits[1].Hash);
+
+            // The push pill reflects it too, computed locally rather than via another git call.
+            Assert.Equal(1, mainVm.RepoStatus.AheadCount);
+        }
+
+        [Fact]
+        public void BranchTreeItem_CanCheckout_FalseForFoldersAndTheCurrentBranch()
+        {
+            var folder = new BranchTreeItem { IsFolder = true };
+            var currentBranchLeaf = new BranchTreeItem { IsFolder = false, Branch = new GitBranch { Name = "develop", IsCurrent = true } };
+            var otherBranchLeaf = new BranchTreeItem { IsFolder = false, Branch = new GitBranch { Name = "feature/x", IsCurrent = false } };
+
+            Assert.False(folder.CanCheckout);
+            Assert.False(currentBranchLeaf.CanCheckout);
+            Assert.True(otherBranchLeaf.CanCheckout);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PullAsync_OpensChoiceDialogWhenDivergedButPullsDirectlyOnFastForward()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Status = new GitRepoStatus { HasUpstream = true, AheadCount = 2, BehindCount = 3 }
+            };
+            var recentService = new RecentRepositoriesService();
+            var themeService = new ThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+            mainVm.RepoStatus = fakeGit.Status;
+
+            // Diverged (ahead and behind both > 0) - should offer the choice, not pull yet.
+            await mainVm.PullAsync();
+            Assert.True(mainVm.IsPullChoiceDialogOpen);
+
+            await mainVm.ConfirmPullRebaseCommand.ExecuteAsync(null);
+            Assert.False(mainVm.IsPullChoiceDialogOpen);
+
+            // A clean fast-forward case (nothing ahead) shouldn't prompt at all.
+            mainVm.RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, BehindCount = 3 };
+            await mainVm.PullAsync();
+            Assert.False(mainVm.IsPullChoiceDialogOpen);
         }
     }
 }

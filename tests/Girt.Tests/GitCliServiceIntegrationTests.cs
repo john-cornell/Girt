@@ -115,6 +115,65 @@ namespace Girt.Tests
             Assert.Contains("secret.key", gitIgnoreContent);
         }
 
+        [Fact]
+        public async Task GetRepoStatusAsync_ReportsAheadAndBehindCounts()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "a.txt"), "1");
+            RunGit("add a.txt");
+            RunGit("commit -m \"initial\"");
+
+            RunGit("checkout -b feature");
+            RunGit("branch --set-upstream-to=main feature");
+
+            // Advance feature by 2 commits (ahead of main).
+            File.WriteAllText(Path.Combine(_testRepoPath, "b.txt"), "1");
+            RunGit("add b.txt");
+            RunGit("commit -m \"feature 1\"");
+            File.WriteAllText(Path.Combine(_testRepoPath, "c.txt"), "1");
+            RunGit("add c.txt");
+            RunGit("commit -m \"feature 2\"");
+
+            // Advance main by 1 commit (feature falls behind it too), then switch back.
+            RunGit("checkout main");
+            File.WriteAllText(Path.Combine(_testRepoPath, "d.txt"), "1");
+            RunGit("add d.txt");
+            RunGit("commit -m \"main advance\"");
+            RunGit("checkout feature");
+
+            // Exercises the combined "rev-list --left-right --count" parsing that replaced two
+            // separate git process spawns for ahead/behind.
+            var status = await _gitService.GetRepoStatusAsync(_testRepoPath);
+
+            Assert.True(status.HasUpstream);
+            Assert.Equal("main", status.UpstreamBranch);
+            Assert.Equal(2, status.AheadCount);
+            Assert.Equal(1, status.BehindCount);
+        }
+
+        [Fact]
+        public async Task AddToGitIgnoreAsync_FolderTarget_IgnoresExactFolderPassedIn()
+        {
+            // GitIgnoreTarget.Folder now takes the exact folder the caller already picked
+            // (see GitWorkingFile.AncestorFolders) rather than guessing a file's immediate
+            // parent - callers resolve that themselves before calling in.
+            Directory.CreateDirectory(Path.Combine(_testRepoPath, "logs"));
+            File.WriteAllText(Path.Combine(_testRepoPath, "logs", "debug.log"), "log contents");
+            RunGit("add logs/debug.log");
+            RunGit("commit -m \"add log file\"");
+
+            var (success, _) = await _gitService.AddToGitIgnoreAsync(_testRepoPath, "logs", GitIgnoreTarget.Folder);
+            Assert.True(success);
+
+            var gitIgnoreContent = File.ReadAllText(Path.Combine(_testRepoPath, ".gitignore"));
+            Assert.Contains("logs/", gitIgnoreContent);
+            Assert.DoesNotContain("logs/debug.log", gitIgnoreContent);
+
+            // Already-tracked files under the folder should be untracked (git rm -r --cached),
+            // which shows up as a staged deletion until the caller commits it.
+            var changes = await _gitService.GetWorkingTreeChangesAsync(_testRepoPath);
+            Assert.Contains(changes.StagedFiles, f => f.Path == "logs/debug.log" && f.Status == FileStatusType.Deleted);
+        }
+
         public void Dispose()
         {
             try

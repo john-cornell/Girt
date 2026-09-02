@@ -36,7 +36,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type models:DiffLine}">
-                        <Border Background="{Binding Type, Converter={StaticResource DiffBgConverter}}"
+                        <Border Background="{Binding Converter={StaticResource DiffBgConverter}}"
                                 Padding="4,1"
                                 SnapsToDevicePixels="True">
                             <Border.ContextMenu>

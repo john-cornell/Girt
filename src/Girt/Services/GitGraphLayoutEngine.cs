@@ -22,9 +22,13 @@ namespace Girt.Services
             "#EF4444", // Red
         };
 
-        public static void ComputeGraphLayout(IReadOnlyList<GitCommit> commits)
+        // Returns the final "which hash is expected next on each lane" state after processing
+        // every row - this is the entire mutable state the algorithm carries row-to-row, and
+        // callers use it to verify whether a previously-computed tail can be safely reused
+        // instead of relaid-out (see CommitHistoryViewModel.TryBuildIncrementalCommitList).
+        public static List<string?> ComputeGraphLayout(IReadOnlyList<GitCommit> commits)
         {
-            if (commits == null || commits.Count == 0) return;
+            if (commits == null || commits.Count == 0) return new List<string?>();
 
             // Map commit hash to row index and commit object
             var commitMap = new Dictionary<string, GitCommit>(StringComparer.OrdinalIgnoreCase);
@@ -162,6 +166,8 @@ namespace Girt.Services
                     activeLanes.RemoveAt(activeLanes.Count - 1);
                 }
             }
+
+            return activeLanes;
         }
     }
 }

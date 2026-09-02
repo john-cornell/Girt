@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -19,6 +20,25 @@ namespace Girt.Services
         public AppTheme Theme { get; set; } = AppTheme.Dark;
         public bool PushAfterCommit { get; set; } = false;
         public bool GroupBranchesIntoFolders { get; set; } = false;
+
+        /// <summary>Whether clicking the "N to push" pill opens a diff review first, rather
+        /// than pushing straight away. Defaults to the safer, review-first behavior.</summary>
+        public bool PushPillOpensReview { get; set; } = true;
+
+        /// <summary>Whether an external change to .git triggers a full silent refresh (graph,
+        /// branches, working changes) instead of just the status pills. Off by default.</summary>
+        public bool AutoRefresh { get; set; } = false;
+
+        /// <summary>Whether minimizing the window drops it into the tray instead of the
+        /// taskbar. Toggled from the tray icon's own context menu.</summary>
+        public bool MinimizeToTray { get; set; } = true;
+
+        /// <summary>Whether closing the window (the X button) hides to tray instead of exiting
+        /// the app. Toggled from the tray icon's own context menu.</summary>
+        public bool MinimizeOnClose { get; set; } = true;
+
+        /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
+        public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
     }
 
     public class ThemeService
@@ -97,6 +117,61 @@ namespace Girt.Services
         {
             var settings = LoadSettings();
             settings.GroupBranchesIntoFolders = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadPushPillOpensReview() => LoadSettings().PushPillOpensReview;
+
+        public void SavePushPillOpensReview(bool value)
+        {
+            var settings = LoadSettings();
+            settings.PushPillOpensReview = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadAutoRefresh() => LoadSettings().AutoRefresh;
+
+        public void SaveAutoRefresh(bool value)
+        {
+            var settings = LoadSettings();
+            settings.AutoRefresh = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadMinimizeToTray() => LoadSettings().MinimizeToTray;
+
+        public void SaveMinimizeToTray(bool value)
+        {
+            var settings = LoadSettings();
+            settings.MinimizeToTray = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadMinimizeOnClose() => LoadSettings().MinimizeOnClose;
+
+        public void SaveMinimizeOnClose(bool value)
+        {
+            var settings = LoadSettings();
+            settings.MinimizeOnClose = value;
+            SaveSettings(settings);
+        }
+
+        public HashSet<string> LoadPinnedBranches(string repoPath)
+        {
+            if (!string.IsNullOrEmpty(repoPath) &&
+                LoadSettings().PinnedBranchesByRepo.TryGetValue(repoPath, out var pinned))
+            {
+                return new HashSet<string>(pinned, StringComparer.OrdinalIgnoreCase);
+            }
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public void SavePinnedBranches(string repoPath, IEnumerable<string> pinnedBranchNames)
+        {
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var settings = LoadSettings();
+            settings.PinnedBranchesByRepo[repoPath] = pinnedBranchNames.ToList();
             SaveSettings(settings);
         }
 

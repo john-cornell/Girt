@@ -59,6 +59,11 @@ namespace Girt.ViewModels
         private List<GitBranch> _allBranches = new();
         private CancellationTokenSource? _filterCts;
 
+        // Tracks which _allCommits instance the graph layout was last computed for, so
+        // ComputeFilteredMatches can skip redoing it when only the filter/isolation state
+        // changed, not the underlying commit list.
+        private List<GitCommit>? _layoutComputedFor;
+
         public ObservableCollection<GitCommit> FilteredCommits { get; } = new();
 
         public CommitHistoryViewModel(
@@ -195,6 +200,11 @@ namespace Girt.ViewModels
             ApplyFilterCore();
         }
 
+        // Deliberately doesn't (re)apply the filter/graph-layout itself - every current caller
+        // either immediately awaits LoadCommitsAsync afterward (which does, on fresh commits;
+        // recomputing here first against the still-stale _allCommits would just be thrown away)
+        // or is expected to call ApplyFilterAsync itself when it needs the display refreshed
+        // without a full commit reload (e.g. on branch selection).
         public void SetBranches(IReadOnlyList<GitBranch> branches, string currentBranch)
         {
             _allBranches = branches.ToList();
@@ -202,7 +212,6 @@ namespace Girt.ViewModels
             {
                 ActiveBranchName = currentBranch;
             }
-            ApplyFilterCore();
         }
 
         public async Task LoadCommitsAsync()
@@ -214,9 +223,22 @@ namespace Girt.ViewModels
             try
             {
                 var commits = await _gitService.GetCommitsAsync(repoPath, maxCount: 1000);
-                _allCommits = commits.ToList();
+                var freshCommits = commits.ToList();
+                var previousCommits = _allCommits;
 
-                ApplyFilterCore();
+                // ComputeFilteredMatches includes GitGraphLayoutEngine.ComputeGraphLayout over
+                // up to 1000 commits - real CPU work, not I/O, so it was blocking the UI thread
+                // (and the whole window, mouse included) for however long that took on every
+                // single refresh. Task.Run moves it off the UI thread; only the final
+                // ObservableCollection update needs to happen back on it. TryBuildIncrementalCommitList
+                // additionally tries to avoid redoing that work at all when most of what changed
+                // is "a few new commits at the top" rather than the whole history.
+                var matches = await Task.Run(() =>
+                {
+                    _allCommits = TryBuildIncrementalCommitList(previousCommits, freshCommits) ?? freshCommits;
+                    return ComputeFilteredMatches();
+                });
+                ApplyFilteredCommitsList(matches);
 
                 if (FilteredCommits.Count > 0 && SelectedCommit == null)
                 {
@@ -227,6 +249,139 @@ namespace Girt.ViewModels
             {
                 IsLoading = false;
             }
+        }
+
+        // Splices a just-created commit straight into the already-loaded graph, without waiting
+        // on (or triggering) any kind of broader refresh - this is what lets a commit show up
+        // in the graph immediately while still only costing the one cheap "git log -1" call that
+        // fetched newCommit's real data (hash/author/date/parent), reusing the exact same
+        // verified incremental-splice path a real reload would take for "one new commit at the
+        // top". Falls back to a full local relayout only if that verification doesn't hold
+        // (which would mean newCommit's parent isn't actually the previous top commit).
+        public void PrependLocalCommit(GitCommit newCommit)
+        {
+            var synthetic = new List<GitCommit> { newCommit };
+            synthetic.AddRange(_allCommits);
+
+            var incremental = TryBuildIncrementalCommitList(_allCommits, synthetic);
+            if (incremental != null)
+            {
+                _allCommits = incremental;
+            }
+            else
+            {
+                _allCommits = synthetic;
+                GitGraphLayoutEngine.ComputeGraphLayout(_allCommits);
+                _layoutComputedFor = _allCommits;
+            }
+
+            // When nothing is filtered/isolated, the new commit unconditionally belongs at the
+            // top of FilteredCommits too - insert it directly (a single Add notification the
+            // virtualized list handles by adding one row) instead of going through
+            // ApplyFilteredCommitsList, which Clear()s and re-Adds the *entire* list (a Reset
+            // notification that tears down and rebuilds every visible row's container - real
+            // work regardless of how cheap the layout computation above was). Any active filter
+            // or isolation mode falls back to the normal recompute, since whether the new commit
+            // actually belongs in view depends on more than just "is it new".
+            var noFiltersOrIsolationActive =
+                string.IsNullOrEmpty(FilterSubject) && string.IsNullOrEmpty(FilterAuthor) &&
+                string.IsNullOrEmpty(FilterDate) && string.IsNullOrEmpty(FilterSha) &&
+                !IsBranchIsolated;
+
+            if (noFiltersOrIsolationActive)
+            {
+                newCommit.IsAssociated = true;
+                newCommit.IsDimmed = false;
+                FilteredCommits.Insert(0, newCommit);
+                if (SelectedCommit == null) SelectedCommit = newCommit;
+            }
+            else
+            {
+                ApplyFilteredCommitsList(ComputeFilteredMatches());
+            }
+        }
+
+        // Avoids redoing the full graph layout on every reload. git log --all is re-parsed into
+        // entirely new GitCommit instances every time regardless (that part isn't avoidable
+        // without a bigger change to fetch only what's new from git itself) - but the CPU-heavy
+        // part is GitGraphLayoutEngine.ComputeGraphLayout, and that only genuinely needs
+        // redoing for commits that are actually new. When the previous top commit is still
+        // findable in the fresh list with everything after it unchanged, only the new commits
+        // above it get laid out; the rest is reused as-is (same objects, so SelectedCommit and
+        // anything else already holding a reference to them stays valid). Any history rewrite,
+        // reorder, or anything else unexpected just falls back to null - a full relayout, same
+        // as before this existed, so this can never leave the graph in a wrong-but-plausible
+        // state - it either reuses correctly or doesn't reuse at all.
+        private List<GitCommit>? TryBuildIncrementalCommitList(List<GitCommit> previous, List<GitCommit> fresh)
+        {
+            if (previous.Count == 0 || fresh.Count == 0) return null;
+
+            // Most refreshes aren't triggered by a new commit at all (staging a file, an
+            // external tool touching .git, a watcher firing) - if nothing changed, this is free.
+            if (fresh.Count == previous.Count)
+            {
+                var unchanged = true;
+                for (var i = 0; i < fresh.Count; i++)
+                {
+                    if (!string.Equals(fresh[i].Hash, previous[i].Hash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        unchanged = false;
+                        break;
+                    }
+                }
+                if (unchanged)
+                {
+                    _layoutComputedFor = previous;
+                    return previous;
+                }
+            }
+
+            var oldTopHash = previous[0].Hash;
+            var boundary = fresh.FindIndex(c => string.Equals(c.Hash, oldTopHash, StringComparison.OrdinalIgnoreCase));
+            if (boundary <= 0) return null;
+
+            // The fetch is capped at 1000 commits, so once history is at that cap, new commits
+            // push the oldest ones out of the window - reuse only as much of the old tail as
+            // still fits, dropping whatever fell off the end (which the fresh fetch already
+            // excludes).
+            var overlapLength = Math.Min(previous.Count, fresh.Count - boundary);
+            for (var i = 0; i < overlapLength; i++)
+            {
+                if (!string.Equals(fresh[boundary + i].Hash, previous[i].Hash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+            }
+
+            var newPrefix = fresh.Take(boundary).ToList();
+            var finalLanes = GitGraphLayoutEngine.ComputeGraphLayout(newPrefix);
+
+            // previous's layout assumed its own top commit started with a clean slate - lane 0,
+            // nothing else active. Reusing it is only valid if the new prefix leaves the graph
+            // in that exact state by the time it reaches the old commits.
+            var stillActive = finalLanes.Where(l => l != null).ToList();
+            if (stillActive.Count != 1 || !string.Equals(stillActive[0], oldTopHash, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var reusedTail = previous.Take(overlapLength).ToList();
+            foreach (var c in reusedTail)
+            {
+                c.RowIndex += boundary;
+            }
+
+            var combined = new List<GitCommit>(newPrefix.Count + reusedTail.Count);
+            combined.AddRange(newPrefix);
+            combined.AddRange(reusedTail);
+            _layoutComputedFor = combined;
+            return combined;
+        }
+
+        public async Task ApplyFilterAsync()
+        {
+            var matches = await Task.Run(() => ComputeFilteredMatches());
+            ApplyFilteredCommitsList(matches);
         }
 
         public void ApplyFilter()
@@ -330,9 +485,14 @@ namespace Girt.ViewModels
             {
                 GitGraphLayoutEngine.ComputeGraphLayout(matches);
             }
-            else
+            else if (!ReferenceEquals(_layoutComputedFor, _allCommits))
             {
+                // Text-filtering and non-hide isolation toggles call this repeatedly against the
+                // same _allCommits instance (nothing about the graph itself changed - only which
+                // rows are shown/dimmed), so re-laying it out every time was pure waste. Only
+                // recompute when _allCommits has actually been replaced by a reload.
                 GitGraphLayoutEngine.ComputeGraphLayout(_allCommits);
+                _layoutComputedFor = _allCommits;
             }
 
             return matches;
@@ -346,7 +506,17 @@ namespace Girt.ViewModels
                 FilteredCommits.Add(c);
             }
 
-            if (FilteredCommits.Count > 0 && (SelectedCommit == null || !FilteredCommits.Contains(SelectedCommit)))
+            // GitCommit.Equals is by hash (see that override for why), so this correctly
+            // recognizes "the same commit, just a fresh instance from this reload" and leaves
+            // SelectedCommit alone - both WPF's own selection-restore-on-Reset (which also goes
+            // through Equals) and CommitDetailViewModel's identical hash check stay in sync with
+            // this. Only actually reassign when the previously selected commit is genuinely gone
+            // (filtered out, or this is the first load).
+            if (FilteredCommits.Count == 0)
+            {
+                SelectedCommit = null;
+            }
+            else if (SelectedCommit == null || !FilteredCommits.Contains(SelectedCommit))
             {
                 SelectedCommit = FilteredCommits[0];
             }

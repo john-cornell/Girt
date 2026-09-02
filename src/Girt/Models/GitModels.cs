@@ -10,6 +10,13 @@ namespace Girt.Models
         Hard   // Discards all changes, resets index & working tree
     }
 
+    public enum GitIgnoreTarget
+    {
+        File,      // Ignore this exact path
+        Extension, // Ignore *.ext for this file's extension
+        Folder     // filePath is already the exact folder to ignore (caller picks the level)
+    }
+
     public enum BranchAssociationMode
     {
         ShowAll,            // Display full commit graph without filtering
@@ -47,6 +54,23 @@ namespace Girt.Models
             FileStatusType.Renamed => "#6366F1",
             _ => "#9CA3AF"
         };
+
+        // Every containing folder from the immediate parent up to the repo root, deepest
+        // first - lets the "Add folder to .gitignore" submenu offer a level to ignore
+        // instead of always guessing the immediate parent.
+        public IReadOnlyList<string> AncestorFolders
+        {
+            get
+            {
+                var segments = Path.Replace('\\', '/').Split('/');
+                var folders = new List<string>();
+                for (var i = segments.Length - 1; i >= 1; i--)
+                {
+                    folders.Add(string.Join("/", segments, 0, i));
+                }
+                return folders;
+            }
+        }
     }
 
     public class WorkingTreeChanges
@@ -82,6 +106,7 @@ namespace Girt.Models
         public string? UpstreamName { get; set; }
         public string TipCommitHash { get; set; } = string.Empty;
         public string TipCommitSubject { get; set; } = string.Empty;
+        public bool IsPinned { get; set; }
 
         public string DisplayName => IsRemote && !string.IsNullOrEmpty(RemoteName) && Name.StartsWith(RemoteName + "/")
             ? Name.Substring(RemoteName.Length + 1)
@@ -101,6 +126,10 @@ namespace Girt.Models
         /// used as the stable key for remembering which folders are collapsed.</summary>
         public string FolderPath { get; set; } = string.Empty;
         public bool IsCollapsed { get; set; }
+
+        /// <summary>Whether the Checkout button should show for this row - leaf branches only,
+        /// and not the branch that's already checked out.</summary>
+        public bool CanCheckout => !IsFolder && Branch?.IsCurrent != true;
     }
 
     public class GitCommit
@@ -126,6 +155,14 @@ namespace Girt.Models
         public bool IsAssociated { get; set; } = true;
         public bool IsDimmed { get; set; } = false;
         public double DisplayOpacity => IsDimmed ? 0.35 : 1.0;
+
+        // A commit's identity is its hash - every reload creates entirely new GitCommit
+        // instances from a fresh `git log` parse, so reference equality would never recognize
+        // "the same" commit across a refresh. Without this, SelectedCommit tracking (see
+        // CommitHistoryViewModel.ApplyFilteredCommitsList) would reset to the top commit and
+        // re-trigger a diff reload on every single refresh, including silent background ones.
+        public override bool Equals(object? obj) => obj is GitCommit other && Hash == other.Hash;
+        public override int GetHashCode() => Hash.GetHashCode();
     }
 
     public enum GitRefType
@@ -228,5 +265,19 @@ namespace Girt.Models
             FileStatusType.Renamed => "#6366F1",
             _ => "#9CA3AF"
         };
+
+        public IReadOnlyList<string> AncestorFolders
+        {
+            get
+            {
+                var segments = Path.Replace('\\', '/').Split('/');
+                var folders = new List<string>();
+                for (var i = segments.Length - 1; i >= 1; i--)
+                {
+                    folders.Add(string.Join("/", segments, 0, i));
+                }
+                return folders;
+            }
+        }
     }
 }
