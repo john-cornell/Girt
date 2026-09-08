@@ -189,10 +189,37 @@ simply not have been hit by whatever timing/nesting condition triggers the failu
 actually breaks — but when one does, this is the fix, immediately, no further investigation
 needed.
 
+## 13. A test that calls a command hitting a real, non-injectable `MessageBox.Show` is a hang risk, not just "slow"
+
+A test that exercises `MainViewModel.PushAsync`'s generic error path (a plain `MessageBox.Show`
+with no test override) was timed at 3 seconds on one run and **1 minute 46 seconds** on the very
+next run of the exact same suite, with no code change in between — under `vstest.console.exe` via
+WSL→Windows interop, `MessageBox.Show` really does render a real, invisible-to-the-agent modal on
+the Windows desktop, and how long it takes to resolve on its own (however that happens - focus
+loss, a "not responding" timeout, something else) is apparently non-deterministic. There is no
+reason to believe it can't eventually just hang forever on some run.
+
+**The fix is never "let it ride, it passed once."** Either:
+- The dialog is already behind an injectable delegate (`ConfirmStashAction` on
+  `WorkingChangesViewModel`, `ConfirmNothingToPushAction` on `MainViewModel`) — set it in the test
+  before calling the command, same as any other test in this codebase already does.
+- It isn't injectable (most plain error-reporting `MessageBox.Show(...)` calls aren't, and adding
+  a delegate for every single one would be its own kind of over-engineering) — then don't call the
+  command end-to-end in a test. Verify the surrounding logic (a classification helper, a guard
+  condition, a status message set *before* the `MessageBox.Show` line) some other way, or drop the
+  test. A model class of what NOT to do: `MainViewModel_PushRejected_OtherFailure_...` was written,
+  passed once at 3s, then hung the whole suite for 1m46s on the very next run - it was deleted
+  rather than "fixed" once this was understood, since the positive-detection sibling test already
+  covers the actual regression risk.
+
+If a new interactive confirmation is genuinely worth unit-testing (not just a one-line error
+`MessageBox.Show`), add the injectable-delegate pattern for it *at the same time* you write the
+first test that would otherwise hit it directly - don't discover this the hard way per-command.
+
 ---
 
 **Before shipping a change to any of the files above:** rebuild, run the full test suite (currently
-44 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
+75 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
 lock in correctness, not perceived speed. If you introduce a `Clear()` on a virtualized list's
 bound collection, a `RefreshRepositoryAsync()` call after a fast local action, or drop a
 `ConfigureAwait(false)` from `GitCliService`, you are reintroducing a bug that was deliberately

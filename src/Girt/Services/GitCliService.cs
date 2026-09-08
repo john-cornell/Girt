@@ -280,6 +280,24 @@ namespace Girt.Services
             }
         }
 
+        // Writes pre-computed content straight to a working-tree file - used for line-level
+        // revert (see WorkingChangesViewModel.RevertSelectedLinesAsync), where the exact
+        // replacement content is already worked out by reconstructing the diff with just the
+        // selected lines reverted. Not a git operation at all, just a plain file write.
+        public async Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content)
+        {
+            try
+            {
+                var fullPath = Path.Combine(repoPath, filePath);
+                await File.WriteAllTextAsync(fullPath, content).ConfigureAwait(false);
+                return (true, "File updated");
+            }
+            catch (Exception ex)
+            {
+                return (false, ex.Message);
+            }
+        }
+
         public async Task<(bool Success, string Output)> PushAsync(string repoPath)
         {
             var (success, output, error) = await RunGitCommandAsync(repoPath, "push").ConfigureAwait(false);

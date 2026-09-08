@@ -140,10 +140,24 @@ namespace Girt.Tests
             LastRequestedIgnoreWhitespace = ignoreWhitespace;
             return Task.FromResult(RawDiff);
         }
+
+        public string? LastWrittenFilePath { get; set; }
+        public string? LastWrittenFileContent { get; set; }
+        public Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content)
+        {
+            LastWrittenFilePath = filePath;
+            LastWrittenFileContent = content;
+            return Task.FromResult((true, "File updated"));
+        }
         public bool NextPushSucceeds { get; set; } = true;
         public string NextPushOutput { get; set; } = "Pushed";
         public bool NextPullSucceeds { get; set; } = true;
-        public Task<(bool Success, string Output)> PushAsync(string repoPath) => Task.FromResult((NextPushSucceeds, NextPushOutput));
+        public bool PushCalled { get; set; }
+        public Task<(bool Success, string Output)> PushAsync(string repoPath)
+        {
+            PushCalled = true;
+            return Task.FromResult((NextPushSucceeds, NextPushOutput));
+        }
         public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult(NextPullSucceeds ? (true, "Pulled") : (false, "Pull failed"));
         public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
@@ -1301,24 +1315,6 @@ namespace Girt.Tests
         }
 
         [Fact]
-        public async Task MainViewModel_PushRejected_OtherFailure_ShowsPlainErrorNotRecoveryDialog()
-        {
-            var fakeGit = new FakeGitService
-            {
-                NextPushSucceeds = false,
-                NextPushOutput = "fatal: could not read from remote repository."
-            };
-            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
-            {
-                RepositoryPath = @"C:\FakeRepo"
-            };
-
-            await mainVm.PushCommand.ExecuteAsync(null);
-
-            Assert.False(mainVm.IsPushRejectedDialogOpen);
-        }
-
-        [Fact]
         public async Task MainViewModel_PushRejected_PullMerge_AutoRetriesPushOnceClean()
         {
             var fakeGit = new FakeGitService
@@ -1393,6 +1389,151 @@ namespace Girt.Tests
 
             Assert.True(fakeGit.RebaseContinued);
             Assert.False(fakeGit.MergeContinued);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushAsync_NothingToPushWithUncommittedChanges_DoesNotCallGitPush()
+        {
+            var fakeGit = new FakeGitService();
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, UncommittedCount = 3 }
+            };
+            // Avoids a real MessageBox.Show - see WorkingChangesViewModel's ConfirmStashAction
+            // for the same test-only override pattern.
+            mainVm.ConfirmNothingToPushAction = _ => false;
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.False(fakeGit.PushCalled);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushAsync_NothingToPushWithUncommittedChanges_ConfirmYes_StagesAllAndSwitchesToWorkingChangesView()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "b.cs" });
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, UncommittedCount = 3 },
+                ConfirmNothingToPushAction = _ => true
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.False(fakeGit.PushCalled);
+            Assert.Equal(ActiveViewMode.WorkingChanges, mainVm.CurrentView);
+            // Confirming should stage everything, not just navigate and leave the user to do it
+            // themselves - all that should be left is typing a commit message.
+            Assert.Empty(mainVm.WorkingChanges.UnstagedFiles);
+            Assert.Equal(2, mainVm.WorkingChanges.StagedFiles.Count);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushAsync_NothingAheadButNoUncommittedChanges_StillPushesNormally()
+        {
+            // "Everything up-to-date" is a legitimate, harmless push attempt here - only the
+            // combination of nothing-ahead AND uncommitted changes should be intercepted.
+            var fakeGit = new FakeGitService();
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, UncommittedCount = 0 }
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushCalled);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushAsync_NoUpstreamYet_StillPushesEvenWithUncommittedChanges()
+        {
+            // A brand-new local branch with no upstream never gets a real AheadCount computed
+            // (see GitCliService.GetRepoStatusAsync) - don't misread that as "nothing to push"
+            // and block a legitimate first push just because the working tree is also dirty.
+            var fakeGit = new FakeGitService();
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                RepoStatus = new GitRepoStatus { HasUpstream = false, AheadCount = 0, UncommittedCount = 3 }
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushCalled);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_RevertSelectedLines_RewritesOnlySelectedLines()
+        {
+            var fakeGit = new FakeGitService
+            {
+                RawDiff = @"diff --git a/test.txt b/test.txt
+index 1234567..89abcdef 100644
+--- a/test.txt
++++ b/test.txt
+@@ -1,3 +1,4 @@
+ line 1
+-line 2
++line 2 modified
++line 2.5 new
+ line 3"
+            };
+
+            var tempDir = Path.Combine(Path.GetTempPath(), $"GirtRevertTest_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                await File.WriteAllTextAsync(Path.Combine(tempDir, "test.txt"), "line 1\nline 2 modified\nline 2.5 new\nline 3");
+
+                var vm = new WorkingChangesViewModel(fakeGit, () => tempDir, _ => Task.CompletedTask, false, _ => { });
+                var file = new GitWorkingFile { Path = "test.txt", IsStaged = false, Status = FileStatusType.Modified };
+
+                vm.SelectedFile = file;
+                await Task.Delay(50); // fire-and-forget LoadFileDiffAsync from OnSelectedFileChanged
+
+                Assert.False(vm.CanRevertSelectedLines);
+
+                vm.DiffLines.Single(l => l.Type == DiffLineType.Added && l.Text == "+line 2.5 new").IsSelected = true;
+                Assert.True(vm.CanRevertSelectedLines);
+
+                await vm.RevertSelectedLinesCommand.ExecuteAsync(null);
+
+                Assert.Equal("test.txt", fakeGit.LastWrittenFilePath);
+                Assert.Equal("line 1\nline 2 modified\nline 3", fakeGit.LastWrittenFileContent);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_RevertSelectedLines_DoesNothingForStagedFiles()
+        {
+            // A staged file's diff is index-vs-HEAD, not working-tree-vs-index - "revert" there
+            // would mean something different (line-level unstage), which isn't implemented, so
+            // this must be a no-op rather than corrupt the working tree file.
+            var fakeGit = new FakeGitService
+            {
+                RawDiff = "diff --git a/x b/x\nindex 1234567..89abcdef 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new"
+            };
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            var file = new GitWorkingFile { Path = "x", IsStaged = true, Status = FileStatusType.Modified };
+
+            vm.SelectedFile = file;
+            await Task.Delay(50);
+            foreach (var l in vm.DiffLines) l.IsSelected = true;
+
+            Assert.False(vm.CanRevertSelectedLines);
+
+            await vm.RevertSelectedLinesCommand.ExecuteAsync(null);
+
+            Assert.Null(fakeGit.LastWrittenFilePath);
         }
 
         [Fact]

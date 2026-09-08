@@ -151,6 +151,50 @@ namespace Girt.Services
         private static string DescribeHiddenLines(int count) =>
             $"⋯ {count} unchanged line{(count == 1 ? "" : "s")} ⋯";
 
+        // Rebuilds the exact resulting file content after reverting just the selected
+        // Added/Deleted lines - every DiffLine.Text already carries the literal original
+        // content (Deleted/Context lines) or current content (Added lines) behind its leading
+        // +/-/space marker, since Girt always diffs with full file context, so no separate
+        // "original file" lookup is needed: a selected Added line is dropped (it didn't exist
+        // before), a selected Deleted line is restored (it did), and anything unselected is
+        // left exactly as it already is in the working tree.
+        public static string ReconstructFileContent(IEnumerable<DiffLine> diffLines, string newlineSequence, bool endsWithNewline)
+        {
+            var outputLines = new List<string>();
+
+            void ProcessLine(DiffLine line)
+            {
+                switch (line.Type)
+                {
+                    case DiffLineType.CollapsedContext:
+                        if (line.HiddenLines != null)
+                        {
+                            foreach (var hidden in line.HiddenLines) ProcessLine(hidden);
+                        }
+                        break;
+                    case DiffLineType.Context:
+                        outputLines.Add(StripMarker(line.Text));
+                        break;
+                    case DiffLineType.Added:
+                        if (!line.IsSelected) outputLines.Add(StripMarker(line.Text));
+                        break;
+                    case DiffLineType.Deleted:
+                        if (line.IsSelected) outputLines.Add(StripMarker(line.Text));
+                        break;
+                    // Header lines (file/hunk headers, "no newline" markers) carry no file
+                    // content and are skipped.
+                }
+            }
+
+            foreach (var line in diffLines) ProcessLine(line);
+
+            var content = string.Join(newlineSequence, outputLines);
+            if (endsWithNewline && outputLines.Count > 0) content += newlineSequence;
+            return content;
+        }
+
+        private static string StripMarker(string text) => text.Length > 0 ? text.Substring(1) : text;
+
         /// <summary>Expands the given collapsed placeholder in place, or re-collapses the
         /// section a given (currently expanded) line belongs to. No-op for any other line.</summary>
         public static void ToggleCollapsedSection(ObservableCollection<DiffLine> diffLines, DiffLine? clicked)

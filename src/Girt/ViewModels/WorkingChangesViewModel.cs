@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -180,6 +181,52 @@ namespace Girt.ViewModels
         public void ExpandAllDiffSections()
         {
             DiffParser.ExpandAllCollapsedSections(DiffLines);
+        }
+
+        // Line-level revert only makes sense against the unstaged diff (working tree vs index) -
+        // reverting a selected line there means "make the working tree match the index again for
+        // just this line". A staged file's diff is index-vs-HEAD, where "revert" would mean
+        // something different (unstage just that line), which isn't implemented here.
+        public bool CanRevertSelectedLines => SelectedFile is { IsStaged: false } && DiffLines.Any(l => l.IsSelected);
+
+        [RelayCommand]
+        public async Task RevertSelectedLinesAsync()
+        {
+            if (SelectedFile == null || SelectedFile.IsStaged) return;
+            if (!DiffLines.Any(l => l.IsSelected)) return;
+
+            var repoPath = _getRepoPath();
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var fullPath = Path.Combine(repoPath, SelectedFile.Path);
+            string existingContent;
+            try
+            {
+                existingContent = await File.ReadAllTextAsync(fullPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not read '{SelectedFile.Path}':\n{ex.Message}", "Revert Selected Lines", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var newline = existingContent.Contains("\r\n") ? "\r\n" : "\n";
+            var endsWithNewline = existingContent.EndsWith(newline);
+            var newContent = DiffParser.ReconstructFileContent(DiffLines, newline, endsWithNewline);
+
+            var (success, output) = await _gitService.WriteWorkingTreeFileAsync(repoPath, SelectedFile.Path, newContent);
+            if (success)
+            {
+                // The file may now be fully clean (drops out of UnstagedFiles) or still dirty
+                // with a smaller diff - a full reload is the only way to know which, unlike the
+                // optimistic list moves used by Stage/Unstage above.
+                await LoadChangesAsync();
+                await _onRepositoryUpdated(false);
+            }
+            else
+            {
+                MessageBox.Show($"Failed to revert selected lines:\n{output}", "Revert Selected Lines", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         [RelayCommand]

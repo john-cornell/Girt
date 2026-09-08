@@ -28,7 +28,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.4.43";
+        public const string AppVersion = "0.4.45";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -622,10 +622,36 @@ namespace Girt.ViewModels
             UpdateRepoStatusLocally(aheadDelta: 0);
         }
 
+        // Overridable so tests can auto-confirm without popping a real MessageBox - see
+        // WorkingChangesViewModel.ConfirmStashAction for the same pattern; production code
+        // never sets this and gets the real Yes/No dialog.
+        public Func<string, bool> ConfirmNothingToPushAction { get; set; } =
+            message => MessageBox.Show(message, "Nothing To Push", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
+
         [RelayCommand]
         public async Task PushAsync()
         {
             if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            // `git push` with nothing ahead just reports "Everything up-to-date" - not an
+            // error, but if there are uncommitted changes lying around, that "success" pushed
+            // literally none of the user's actual work, which reads exactly like a failure.
+            // Only trust AheadCount for this when there's an upstream to compare against - a
+            // brand-new local branch with no upstream yet has real commits worth pushing even
+            // though AheadCount is never computed for it.
+            if (RepoStatus?.HasUpstream == true && !RepoStatus.HasCommitsToPush && RepoStatus.HasChangesToCommit)
+            {
+                var message = $"There's nothing to push yet - you have {RepoStatus.UncommittedCount} uncommitted change(s).\n\nStage them now so you can write a commit message?";
+                if (ConfirmNothingToPushAction(message))
+                {
+                    // Land on Working Changes with everything already staged - all that's left
+                    // is typing a commit message, not a second manual "stage all" click.
+                    await ShowWorkingChangesViewAsync();
+                    await WorkingChanges.StageAllAsync();
+                }
+
+                return;
+            }
 
             IsLoading = true;
             StatusMessage = "Pushing commits to remote...";

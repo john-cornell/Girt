@@ -25,7 +25,8 @@
                    Visibility="{Binding DiffLines.Count, Converter={StaticResource NullToVisConverter}, ConverterParameter=Empty}" />
 
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" CanContentScroll="True">
-            <ItemsControl ItemsSource="{Binding DiffLines}"
+            <ItemsControl x:Name="DiffLinesItemsControl"
+                          ItemsSource="{Binding DiffLines}"
                           VirtualizingStackPanel.IsVirtualizing="True"
                           VirtualizingStackPanel.VirtualizationMode="Recycling"
                           ScrollViewer.CanContentScroll="True">
@@ -38,7 +39,20 @@
                     <DataTemplate DataType="{x:Type models:DiffLine}">
                         <Border Background="{Binding Converter={StaticResource DiffBgConverter}}"
                                 Padding="4,1"
-                                SnapsToDevicePixels="True">
+                                SnapsToDevicePixels="True"
+                                PreviewMouseLeftButtonDown="OnDiffLineMouseLeftButtonDown"
+                                PreviewMouseMove="OnDiffLineMouseMove"
+                                PreviewMouseLeftButtonUp="OnDiffLineMouseLeftButtonUp">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                            <Setter Property="BorderBrush" Value="{DynamicResource TextAccentBrush}" />
+                                            <Setter Property="BorderThickness" Value="0,1,0,1" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Border.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="{Binding Converter={StaticResource DiffToggleLabelConverter}}"
@@ -46,6 +60,10 @@
                                               Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
                                     <MenuItem Header="Show Whole File"
                                               Click="OnExpandAllDiffSectionsClicked" />
+                                    <Separator Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
+                                    <MenuItem Header="Revert Selected Lines"
+                                              Click="OnRevertSelectedLinesClicked"
+                                              Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
                                 </ContextMenu>
                             </Border.ContextMenu>
                             <Grid>

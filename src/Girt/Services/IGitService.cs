@@ -31,6 +31,7 @@ namespace Girt.Services
         Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, string filePath);
         Task<(bool Success, string Output)> CommitAsync(string repoPath, string message);
         Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false);
+        Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
         Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false);
         Task<(bool Success, string Output)> FetchAllAsync(string repoPath);

@@ -218,7 +218,7 @@ namespace Girt.Models
         CollapsedContext
     }
 
-    public class DiffLine
+    public partial class DiffLine : ObservableObject
     {
         public DiffLineType Type { get; set; }
         public int? OldLineNumber { get; set; }
@@ -235,6 +235,13 @@ namespace Girt.Models
         public int? CollapseGroupId { get; set; }
 
         public bool CanToggleCollapse => Type == DiffLineType.CollapsedContext || CollapseGroupId.HasValue;
+
+        /// <summary>Selected for a line-level revert (see
+        /// WorkingChangesViewModel.RevertSelectedLinesAsync / DiffParser.ReconstructFileContent)
+        /// - only meaningful for Added/Deleted lines in an unstaged file's diff. Click-toggled
+        /// from DiffViewerControl's code-behind.</summary>
+        [ObservableProperty]
+        private bool _isSelected;
     }
 
     public enum FileStatusType
