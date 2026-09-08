@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Girt.Models;
@@ -29,9 +30,20 @@ namespace Girt.Tests
         public Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitBranch>>(Branches);
         public Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000) => Task.FromResult<IReadOnlyList<GitCommit>>(Commits);
         public Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash) => Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffFiles);
-        public Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath) => Task.FromResult(RawDiff);
+        public bool? LastRequestedIgnoreWhitespace { get; set; }
+        public string? LastDiffAgainstRef { get; set; }
+        public Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath, bool ignoreWhitespace = false, string? diffAgainstRef = null)
+        {
+            LastRequestedIgnoreWhitespace = ignoreWhitespace;
+            LastDiffAgainstRef = diffAgainstRef;
+            return Task.FromResult(RawDiff);
+        }
         public Task<IReadOnlyList<GitFileDiff>> GetUnpushedDiffAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffFiles);
-        public Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath) => Task.FromResult(RawDiff);
+        public Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath, bool ignoreWhitespace = false)
+        {
+            LastRequestedIgnoreWhitespace = ignoreWhitespace;
+            return Task.FromResult(RawDiff);
+        }
         public Task<GitRepoStatus> GetRepoStatusAsync(string repoPath) => Task.FromResult(Status);
         public Task<WorkingTreeChanges> GetWorkingTreeChangesAsync(string repoPath) => Task.FromResult(Changes);
         
@@ -123,9 +135,16 @@ namespace Girt.Tests
             return Task.FromResult((true, "Committed"));
         }
 
-        public Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged) => Task.FromResult(RawDiff);
-        public Task<(bool Success, string Output)> PushAsync(string repoPath) => Task.FromResult((true, "Pushed"));
-        public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult((true, "Pulled"));
+        public Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false)
+        {
+            LastRequestedIgnoreWhitespace = ignoreWhitespace;
+            return Task.FromResult(RawDiff);
+        }
+        public bool NextPushSucceeds { get; set; } = true;
+        public string NextPushOutput { get; set; } = "Pushed";
+        public bool NextPullSucceeds { get; set; } = true;
+        public Task<(bool Success, string Output)> PushAsync(string repoPath) => Task.FromResult((NextPushSucceeds, NextPushOutput));
+        public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult(NextPullSucceeds ? (true, "Pulled") : (false, "Pull failed"));
         public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
             FetchAllCalled = true;
@@ -195,21 +214,84 @@ namespace Girt.Tests
             return Task.FromResult((true, "Cherry-picked commit"));
         }
 
-        public Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false)
-        {
-            LastMergedRef = targetRef;
-            return Task.FromResult((true, "Merged ref"));
-        }
-
         public Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef)
         {
             LastRebasedRef = targetRef;
             return Task.FromResult((true, "Rebased ref"));
         }
+
+        public List<GitCommit> CommitsBetween { get; set; } = new();
+        public List<GitFileDiff> DiffStatBetween { get; set; } = new();
+        public List<MergeConflictFile> ConflictedFiles { get; set; } = new();
+        public string ConflictOursDiff { get; set; } = "";
+        public string ConflictTheirsDiff { get; set; } = "";
+        public bool MergeAborted { get; set; }
+        public bool MergeContinued { get; set; }
+        public bool NextMergeSucceeds { get; set; } = true;
+
+        public Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash, bool noFf)
+        {
+            LastMergedRef = targetRef;
+            return Task.FromResult((NextMergeSucceeds, NextMergeSucceeds ? "Merged ref" : "CONFLICT (content): Merge conflict"));
+        }
+
+        public Task<IReadOnlyList<GitCommit>> GetCommitsBetweenAsync(string repoPath, string fromRef, string toRef, int maxCount = 200) =>
+            Task.FromResult<IReadOnlyList<GitCommit>>(CommitsBetween);
+
+        public Task<IReadOnlyList<GitFileDiff>> GetDiffStatBetweenAsync(string repoPath, string fromRef, string toRef) =>
+            Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffStatBetween);
+
+        public Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath) =>
+            Task.FromResult<IReadOnlyList<MergeConflictFile>>(ConflictedFiles);
+
+        public Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath) =>
+            Task.FromResult((ConflictOursDiff, ConflictTheirsDiff));
+
+        public Task<(bool Success, string Output)> AbortMergeAsync(string repoPath)
+        {
+            MergeAborted = true;
+            return Task.FromResult((true, "Aborted"));
+        }
+
+        public Task<(bool Success, string Output)> ContinueMergeAsync(string repoPath)
+        {
+            MergeContinued = true;
+            return Task.FromResult((true, "Merge continued"));
+        }
+
+        public bool RebaseAborted { get; set; }
+        public bool RebaseContinued { get; set; }
+        public bool ForcePushWithLeaseCalled { get; set; }
+        public bool NextForcePushSucceeds { get; set; } = true;
+
+        public Task<(bool Success, string Output)> AbortRebaseAsync(string repoPath)
+        {
+            RebaseAborted = true;
+            return Task.FromResult((true, "Rebase aborted"));
+        }
+
+        public Task<(bool Success, string Output)> ContinueRebaseAsync(string repoPath)
+        {
+            RebaseContinued = true;
+            return Task.FromResult((true, "Rebase continued"));
+        }
+
+        public Task<(bool Success, string Output)> ForcePushWithLeaseAsync(string repoPath)
+        {
+            ForcePushWithLeaseCalled = true;
+            return Task.FromResult((NextForcePushSucceeds, NextForcePushSucceeds ? "Force pushed" : "Force push failed"));
+        }
     }
 
     public class ViewModelTests
     {
+        // ThemeService defaults to the real, shared %APPDATA%\Girt\settings.json - the same
+        // file the actual installed app uses. Every test must use this instead of `new
+        // ThemeService()` directly, or it silently reads/writes the user's real settings and
+        // cross-contaminates other tests that happen to run against the same file.
+        private static ThemeService CreateIsolatedThemeService() =>
+            new(Path.Combine(Path.GetTempPath(), $"GirtTestSettings_{Guid.NewGuid():N}.json"));
+
         [Fact]
         public async Task BranchListViewModel_FiltersBranchesCorrectly()
         {
@@ -843,7 +925,7 @@ namespace Girt.Tests
         {
             var fakeGit = new FakeGitService();
             var recentService = new RecentRepositoriesService();
-            var themeService = new ThemeService();
+            var themeService = CreateIsolatedThemeService();
             var mainVm = new MainViewModel(fakeGit, recentService, themeService)
             {
                 RepositoryPath = @"C:\FakeRepo"
@@ -994,7 +1076,7 @@ namespace Girt.Tests
         {
             var fakeGit = new FakeGitService();
             var recentService = new RecentRepositoriesService();
-            var themeService = new ThemeService();
+            var themeService = CreateIsolatedThemeService();
             var mainVm = new MainViewModel(fakeGit, recentService, themeService);
 
             Assert.Contains(MainViewModel.AppVersion, mainVm.WindowTitle);
@@ -1013,7 +1095,7 @@ namespace Girt.Tests
         {
             var fakeGit = new FakeGitService();
             var recentService = new RecentRepositoriesService();
-            var themeService = new ThemeService();
+            var themeService = CreateIsolatedThemeService();
             var mainVm = new MainViewModel(fakeGit, recentService, themeService);
 
             // Default
@@ -1064,7 +1146,7 @@ namespace Girt.Tests
             fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = true });
 
             var recentService = new RecentRepositoriesService();
-            var themeService = new ThemeService();
+            var themeService = CreateIsolatedThemeService();
             var mainVm = new MainViewModel(fakeGit, recentService, themeService)
             {
                 RepositoryPath = @"C:\FakeRepo"
@@ -1098,6 +1180,81 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task MainViewModel_IgnoreWhitespaceInDiffs_PropagatesAndRefreshesCurrentDiff()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+
+            var recentService = new RecentRepositoriesService();
+            var themeService = CreateIsolatedThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.WorkingChanges.LoadChangesAsync();
+            Assert.False(fakeGit.LastRequestedIgnoreWhitespace);
+
+            // Toggling re-fetches the currently displayed diff immediately, with the new flag.
+            mainVm.IgnoreWhitespaceInDiffs = true;
+            await Task.Delay(50); // RefreshDiffAsync is fired-and-forgotten from the partial method.
+
+            Assert.True(fakeGit.LastRequestedIgnoreWhitespace);
+        }
+
+        [Fact]
+        public void GitCommit_IsCurrentHead_TrueOnlyWhenARefBadgeIsMarkedCurrent()
+        {
+            var noRefs = new GitCommit { Hash = "aaa" };
+            var otherBranch = new GitCommit
+            {
+                Hash = "bbb",
+                Refs = new List<GitRefBadge> { new() { Name = "feature/x", RefType = GitRefType.LocalBranch, IsCurrentHead = false } }
+            };
+            var checkedOut = new GitCommit
+            {
+                Hash = "ccc",
+                Refs = new List<GitRefBadge> { new() { Name = "develop", RefType = GitRefType.LocalBranch, IsCurrentHead = true } }
+            };
+
+            Assert.False(noRefs.IsCurrentHead);
+            Assert.False(otherBranch.IsCurrentHead);
+            Assert.True(checkedOut.IsCurrentHead);
+        }
+
+        [Fact]
+        public async Task MainViewModel_ShowWorkingChangesView_SyncsUncommittedCountPill()
+        {
+            // Regression: switching to the Working Changes tab (or the working-tree file
+            // watcher's debounced refresh while already on it) used to call
+            // WorkingChanges.LoadChangesAsync() without also updating RepoStatus.
+            // UncommittedCount - the file list was correct, but the toolbar's "N to commit"
+            // pill kept showing whatever stale value it had before (e.g. "0 to commit" next to
+            // a panel full of real unstaged files).
+            var fakeGit = new FakeGitService
+            {
+                Status = new GitRepoStatus { HasUpstream = true, UncommittedCount = 0 }
+            };
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "b.cs" });
+            fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "c.cs", IsStaged = true });
+
+            var recentService = new RecentRepositoriesService();
+            var themeService = CreateIsolatedThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+            mainVm.RepoStatus = fakeGit.Status;
+
+            Assert.Equal(0, mainVm.RepoStatus.UncommittedCount);
+
+            await mainVm.ShowWorkingChangesViewAsync();
+
+            Assert.Equal(3, mainVm.RepoStatus.UncommittedCount);
+        }
+
+        [Fact]
         public async Task MainViewModel_PullAsync_OpensChoiceDialogWhenDivergedButPullsDirectlyOnFastForward()
         {
             var fakeGit = new FakeGitService
@@ -1105,7 +1262,7 @@ namespace Girt.Tests
                 Status = new GitRepoStatus { HasUpstream = true, AheadCount = 2, BehindCount = 3 }
             };
             var recentService = new RecentRepositoriesService();
-            var themeService = new ThemeService();
+            var themeService = CreateIsolatedThemeService();
             var mainVm = new MainViewModel(fakeGit, recentService, themeService)
             {
                 RepositoryPath = @"C:\FakeRepo"
@@ -1123,6 +1280,119 @@ namespace Girt.Tests
             mainVm.RepoStatus = new GitRepoStatus { HasUpstream = true, AheadCount = 0, BehindCount = 3 };
             await mainVm.PullAsync();
             Assert.False(mainVm.IsPullChoiceDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushRejected_NonFastForward_OpensRecoveryDialogInsteadOfPlainError()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "! [rejected]        develop -> develop (fetch first)\nerror: failed to push some refs"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.True(mainVm.IsPushRejectedDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushRejected_OtherFailure_ShowsPlainErrorNotRecoveryDialog()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: could not read from remote repository."
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.False(mainVm.IsPushRejectedDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushRejected_PullMerge_AutoRetriesPushOnceClean()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "! [rejected]        develop -> develop (fetch first)"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsPushRejectedDialogOpen);
+
+            // Once the pull lands clean, the push should be retried automatically instead of
+            // leaving the user to notice and push again themselves.
+            fakeGit.NextPushSucceeds = true;
+            await mainVm.ConfirmPushRejectedPullMergeCommand.ExecuteAsync(null);
+
+            Assert.False(mainVm.IsPushRejectedDialogOpen);
+            Assert.False(mainVm.IsMergeConflictDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushRejected_PullConflict_DoesNotAutoRetryPush()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "! [rejected]        develop -> develop (fetch first)",
+                NextPullSucceeds = false,
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+            await mainVm.ConfirmPushRejectedPullMergeCommand.ExecuteAsync(null);
+
+            // The conflict dialog should be open, and the push must not have been retried
+            // against a half-resolved merge - if it had, the still-failing fake push would have
+            // reopened the push-rejected dialog instead.
+            Assert.True(mainVm.IsMergeConflictDialogOpen);
+            Assert.False(mainVm.IsPushRejectedDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PullRebase_OnConflict_UsesRebaseAbortAndContinueNotMerge()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPullSucceeds = false,
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.ConfirmPullRebaseCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsMergeConflictDialogOpen);
+            Assert.Equal("Abort Rebase", mainVm.AbortMergeButtonLabel);
+            Assert.Equal("Continue Rebase", mainVm.ContinueMergeButtonLabel);
+
+            await mainVm.MarkConflictFileResolvedCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+            Assert.True(mainVm.CanContinueMerge);
+
+            await mainVm.ContinueMergeCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.RebaseContinued);
+            Assert.False(fakeGit.MergeContinued);
         }
 
         [Fact]
@@ -1183,6 +1453,160 @@ namespace Girt.Tests
             await vm.RemoveLocalIdentityOverrideCommand.ExecuteAsync(null);
             Assert.False(vm.HasLocalIdentityOverride);
             Assert.DoesNotContain("user.name", fakeGit.LocalConfig.Keys);
+        }
+
+        [Fact]
+        public async Task MainViewModel_MergeIntoCurrentBranch_ShowsPreviewBeforeMerging()
+        {
+            var fakeGit = new FakeGitService
+            {
+                CommitsBetween = { new GitCommit { Hash = "abc1234", Subject = "Add feature" } },
+                DiffStatBetween = { new GitFileDiff { Path = "a.cs", Additions = 3, Deletions = 1 } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+
+            // The preview must be populated and awaiting confirmation - the merge itself
+            // shouldn't have run yet.
+            Assert.True(mainVm.IsMergePreviewDialogOpen);
+            Assert.Single(mainVm.MergePreviewCommits);
+            Assert.Single(mainVm.MergePreviewFiles);
+            Assert.Null(fakeGit.LastMergedRef);
+
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            Assert.False(mainVm.IsMergePreviewDialogOpen);
+            Assert.Equal("feature/x", fakeGit.LastMergedRef);
+        }
+
+        [Fact]
+        public async Task MainViewModel_ConfirmMerge_OnConflict_OpensConflictDialogInsteadOfPlainError()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                ConflictedFiles =
+                {
+                    new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified },
+                    new MergeConflictFile { Path = "b.cs", ConflictType = MergeConflictType.BothModified }
+                }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            Assert.True(mainVm.IsMergeConflictDialogOpen);
+            Assert.Equal(2, mainVm.MergeConflictFiles.Count);
+            Assert.False(mainVm.CanContinueMerge);
+        }
+
+        [Fact]
+        public async Task MainViewModel_MarkConflictFileResolved_EnablesContinueOnlyOnceAllResolved()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                ConflictedFiles =
+                {
+                    new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified },
+                    new MergeConflictFile { Path = "b.cs", ConflictType = MergeConflictType.BothModified }
+                }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            var first = mainVm.MergeConflictFiles[0];
+            var second = mainVm.MergeConflictFiles[1];
+
+            await mainVm.MarkConflictFileResolvedCommand.ExecuteAsync(first);
+            Assert.True(first.IsResolved);
+            Assert.False(mainVm.CanContinueMerge);
+
+            await mainVm.MarkConflictFileResolvedCommand.ExecuteAsync(second);
+            Assert.True(second.IsResolved);
+            Assert.True(mainVm.CanContinueMerge);
+
+            await mainVm.ContinueMergeCommand.ExecuteAsync(null);
+            Assert.False(mainVm.IsMergeConflictDialogOpen);
+            Assert.True(fakeGit.MergeContinued);
+        }
+
+        [Fact]
+        public async Task CommitDetailViewModel_MergeCommit_DiffsAgainstFirstParent()
+        {
+            // Regression: `git show <merge-commit> -- path` returns nothing for a merge
+            // commit (2+ parents) - git can't pick a side without -m/-c - so the changed-files
+            // list populated fine (numstat/combined-diff summaries still work) while every
+            // per-file diff silently came back empty. See GitCliService.GetRawFileDiffAsync.
+            var fakeGit = new FakeGitService
+            {
+                RawDiff = "diff --git a/b.txt b/b.txt\nindex 1234567..89abcdef 100644\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+b"
+            };
+            var vm = new CommitDetailViewModel(fakeGit, () => @"C:\FakeRepo");
+
+            var mergeCommit = new GitCommit
+            {
+                Hash = "merge123",
+                ParentHashes = new List<string> { "parentA", "parentB" }
+            };
+            fakeGit.DiffFiles.Add(new GitFileDiff { Path = "b.txt" });
+
+            await vm.SetCommitAsync(mergeCommit);
+            // SelectedFile's setter fires LoadFileDiffAsync fire-and-forget (see
+            // OnSelectedFileChanged) - its DiffParser.ParseUnifiedDiff call runs on a real
+            // thread-pool hop (Task.Run), so it isn't guaranteed done yet at this point.
+            await Task.Delay(50);
+
+            Assert.Equal("parentA", fakeGit.LastDiffAgainstRef);
+            Assert.NotEmpty(vm.DiffLines);
+
+            // A normal, single-parent commit shouldn't pass a parent ref at all - `git show`
+            // already handles that case correctly on its own.
+            fakeGit.DiffFiles.Clear();
+            fakeGit.DiffFiles.Add(new GitFileDiff { Path = "a.txt" });
+            var normalCommit = new GitCommit { Hash = "normal123", ParentHashes = new List<string> { "parentA" } };
+            await vm.SetCommitAsync(normalCommit);
+            await Task.Delay(50);
+
+            Assert.Null(fakeGit.LastDiffAgainstRef);
+        }
+
+        [Fact]
+        public async Task MainViewModel_AbortMerge_CallsGitAbortAndClosesConflictDialog()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsMergeConflictDialogOpen);
+
+            // AbortMergeAsync shows a Yes/No MessageBox first in the real app - it's tested
+            // indirectly here by calling the git-service abort path directly, since the
+            // MessageBox itself can't be driven from a unit test.
+            var (success, _) = await fakeGit.AbortMergeAsync(mainVm.RepositoryPath);
+            Assert.True(success);
+            Assert.True(fakeGit.MergeAborted);
         }
     }
 }

@@ -14,6 +14,7 @@ namespace Girt.ViewModels
     {
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
+        private readonly Func<bool> _getIgnoreWhitespace;
 
         [ObservableProperty]
         private bool _isOpen;
@@ -30,10 +31,11 @@ namespace Girt.ViewModels
         public ObservableCollection<GitFileDiff> ChangedFiles { get; } = new();
         public ObservableCollection<DiffLine> DiffLines { get; } = new();
 
-        public UnpushedChangesViewModel(IGitService gitService, Func<string> getRepoPath)
+        public UnpushedChangesViewModel(IGitService gitService, Func<string> getRepoPath, Func<bool>? getIgnoreWhitespace = null)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
+            _getIgnoreWhitespace = getIgnoreWhitespace ?? (() => false);
         }
 
         [RelayCommand]
@@ -78,6 +80,10 @@ namespace Girt.ViewModels
             _ = LoadFileDiffAsync(value);
         }
 
+        // Public so toggling "Ignore Whitespace Changes" can re-fetch the currently displayed
+        // diff immediately instead of only applying the next time a file is clicked.
+        public Task RefreshDiffAsync() => LoadFileDiffAsync(SelectedFile);
+
         private async Task LoadFileDiffAsync(GitFileDiff? file)
         {
             DiffLines.Clear();
@@ -89,7 +95,7 @@ namespace Girt.ViewModels
             IsLoadingDiff = true;
             try
             {
-                var rawDiff = await _gitService.GetRawUnpushedFileDiffAsync(repoPath, file.Path);
+                var rawDiff = await _gitService.GetRawUnpushedFileDiffAsync(repoPath, file.Path, _getIgnoreWhitespace());
                 var parsedLines = await Task.Run(() => DiffParser.ParseUnifiedDiff(rawDiff));
 
                 foreach (var line in parsedLines)

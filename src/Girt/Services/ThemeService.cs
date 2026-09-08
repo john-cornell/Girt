@@ -42,6 +42,10 @@ namespace Girt.Services
         /// single/double-click behavior for selection/checkout either way).</summary>
         public bool FolderExpandOnSingleClick { get; set; } = true;
 
+        /// <summary>Whether every diff view (commit detail, working tree, unpushed review)
+        /// passes `-w` to git so whitespace-only changes don't show up as diff noise.</summary>
+        public bool IgnoreWhitespaceInDiffs { get; set; } = false;
+
         /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
         public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
     }
@@ -51,14 +55,26 @@ namespace Girt.Services
         private readonly string _settingsPath;
         public AppTheme CurrentTheme { get; private set; } = AppTheme.Dark;
 
-        public ThemeService()
+        public ThemeService() : this(DefaultSettingsPath())
         {
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var girtDir = Path.Combine(appData, "Girt");
-            Directory.CreateDirectory(girtDir);
-            _settingsPath = Path.Combine(girtDir, "settings.json");
+        }
+
+        // Lets tests point at an isolated temp file instead of the real, shared
+        // %APPDATA%\Girt\settings.json - without this, a test run could (and did) silently
+        // overwrite the actual installed app's settings, plus different tests racing on the
+        // same real file caused genuine cross-test contamination and flaky failures.
+        public ThemeService(string settingsPath)
+        {
+            _settingsPath = settingsPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath) ?? ".");
 
             CurrentTheme = LoadSettings().Theme;
+        }
+
+        private static string DefaultSettingsPath()
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "Girt", "settings.json");
         }
 
         private AppSettings LoadSettings()
@@ -167,6 +183,15 @@ namespace Girt.Services
         {
             var settings = LoadSettings();
             settings.FolderExpandOnSingleClick = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadIgnoreWhitespaceInDiffs() => LoadSettings().IgnoreWhitespaceInDiffs;
+
+        public void SaveIgnoreWhitespaceInDiffs(bool value)
+        {
+            var settings = LoadSettings();
+            settings.IgnoreWhitespaceInDiffs = value;
             SaveSettings(settings);
         }
 

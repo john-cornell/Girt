@@ -1,3 +1,12 @@
+# Project rules
+
+- No speculative abstractions. Don't add interfaces, config knobs, extension points, or
+  generalized helpers for a use case that doesn't exist yet. Build for what's actually asked.
+- Prefer quality, simplicity, robustness, scalability, and long-term maintainability over
+  cleverness or shortcuts.
+
+# Performance architecture
+
 Before editing `GitCliService`, `MainViewModel`, `CommitHistoryViewModel`, `BranchListViewModel`,
 or `WorkingChangesViewModel`, read `AIREADME.md` at the repo root. It documents specific
 performance fixes (ConfigureAwait, avoiding ObservableCollection Reset notifications, incremental

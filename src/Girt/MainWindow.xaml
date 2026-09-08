@@ -291,6 +291,14 @@
                               Margin="0,0,10,0"
                               ToolTip="When checked, an external change to .git (another tool, a background sync) triggers a full refresh automatically. Off by default - only the pills (ahead/behind/uncommitted/branch) update on their own; your own actions here always update immediately regardless of this." />
 
+                    <CheckBox Content="Ignore Whitespace"
+                              IsChecked="{Binding IgnoreWhitespaceInDiffs}"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
+                              FontSize="11"
+                              VerticalAlignment="Center"
+                              Margin="0,0,10,0"
+                              ToolTip="Passes -w to git for every diff (commit detail, working tree, unpushed review), so whitespace-only changes don't show up as diff noise." />
+
                     <Button Content="🌓 Theme"
                             Style="{StaticResource ToolButtonStyle}"
                             Command="{Binding ToggleThemeCommand}"
@@ -545,8 +553,8 @@
                                                                   CommandParameter="{Binding}" />
                                                         <Separator />
                                                         <MenuItem Header="Delete Branch..."
-                                                                  Command="{Binding DataContext.BranchList.DeleteBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding}" />
+                                                                  Click="OnDeleteBranchClicked"
+                                                                  Visibility="{Binding IsCurrent, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
@@ -626,14 +634,25 @@
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="🔀 Merge into current branch..."
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                                            <MenuItem Header="Merge (Default)"
+                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Squash and Merge..."
+                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Merge (--no-ff)..."
+                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                        </MenuItem>
                                                         <MenuItem Header="📋 Copy Branch Name"
                                                                   Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
                                                         <MenuItem Header="Delete Branch..."
-                                                                  Command="{Binding DataContext.BranchList.DeleteBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  CommandParameter="{Binding Branch}"
-                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                                  Click="OnDeleteBranchClicked"
+                                                                  Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                                     </ContextMenu>
                                                 </Grid.ContextMenu>
 
@@ -857,6 +876,18 @@
                                                                   Command="{Binding DataContext.BranchList.CheckoutBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        <MenuItem Header="🔀 Merge into current branch..."
+                                                                  Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                                            <MenuItem Header="Merge (Default)"
+                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Squash and Merge..."
+                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Merge (--no-ff)..."
+                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding Branch}" />
+                                                        </MenuItem>
                                                         <MenuItem Header="📋 Copy Branch Name"
                                                                   Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
@@ -1041,6 +1072,16 @@
                             <Style TargetType="{x:Type ListViewItem}">
                                 <Setter Property="Opacity" Value="{Binding DisplayOpacity}" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Style.Triggers>
+                                    <!-- "You are here" - the commit currently checked out gets a
+                                         persistent tint, on top of which the graph column also
+                                         draws a filled square marker instead of a dot (see
+                                         CommitGraphCanvas). Selecting the row still shows the
+                                         normal selection color on top of this. -->
+                                    <DataTrigger Binding="{Binding IsCurrentHead}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource CurrentHeadRowBackgroundBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
                             </Style>
                         </ListView.ItemContainerStyle>
                         <ListView.ContextMenu>
@@ -2156,6 +2197,356 @@
                         <Button Content="Cancel"
                                 Style="{StaticResource StandardButtonStyle}"
                                 Command="{Binding CancelPullChoiceDialogCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: MERGE PREVIEW - shows what a merge will actually bring in (commits, files)
+             before it runs, instead of just a bare "are you sure?" prompt. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsMergePreviewDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="560"
+                    MaxHeight="640"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="🔀 Merge Preview"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,8" />
+
+                    <TextBlock Grid.Row="1" TextWrapping="Wrap" Margin="0,0,0,4">
+                        <Run Text="Local (yours): " Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" />
+                        <Run Text="{Binding CurrentBranch, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" />
+                    </TextBlock>
+                    <TextBlock Grid.Row="2" TextWrapping="Wrap" Margin="0,0,0,16">
+                        <Run Text="Merging in: " Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" />
+                        <Run Text="{Binding MergePreviewSourceDisplay, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextAccentBrush}" FontSize="12" />
+                        <Run Text=" (" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" />
+                        <Run Text="{Binding MergePreviewModeLabel, Mode=OneWay}" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" />
+                        <Run Text=")" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" />
+                    </TextBlock>
+
+                    <TextBlock Grid.Row="3" Margin="0,0,0,0"
+                               Text="{Binding MergePreviewCommits.Count, StringFormat='INCOMING COMMITS ({0})'}"
+                               FontSize="11" FontWeight="Bold"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <ListBox Grid.Row="3" Margin="0,18,0,0" MaxHeight="160"
+                             ItemsSource="{Binding MergePreviewCommits}"
+                             Style="{StaticResource ModernListBoxStyle}"
+                             ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type models:GitCommit}">
+                                <StackPanel Orientation="Horizontal" Margin="2,3">
+                                    <TextBlock Text="{Binding ShortHash}"
+                                               Foreground="{DynamicResource TextAccentBrush}"
+                                               FontFamily="Consolas, Cascadia Code, monospace"
+                                               FontSize="11" Margin="0,0,8,0" />
+                                    <TextBlock Text="{Binding Subject}"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               FontSize="12" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <TextBlock Grid.Row="4"
+                               Text="{Binding MergePreviewFiles.Count, StringFormat='FILES THAT WILL CHANGE ({0})'}"
+                               FontSize="11" FontWeight="Bold"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,16,0,6" />
+                    <ListBox Grid.Row="5" MaxHeight="160"
+                             ItemsSource="{Binding MergePreviewFiles}"
+                             Style="{StaticResource ModernListBoxStyle}"
+                             ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type models:GitFileDiff}">
+                                <Grid Margin="2,3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0"
+                                            Background="{Binding StatusColor, Converter={StaticResource HexToBrushConverter}}"
+                                            CornerRadius="3" Width="16" Height="16" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding StatusBadge}" Foreground="#FFFFFF" FontSize="10" FontWeight="Bold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12"
+                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Additions, StringFormat='+{0} '}" Foreground="#10B981" FontSize="11" />
+                                        <TextBlock Text="{Binding Deletions, StringFormat='-{0}'}" Foreground="#EF4444" FontSize="11" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                        <Button Content="Cancel"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CancelMergePreviewDialogCommand}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Merge"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding ConfirmMergeCommand}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: MERGE CONFLICTS - external-handoff resolution: lists conflicted files with
+             an Ours(yours)/Theirs(incoming) diff preview against the common base for the
+             selected file, a button to open it in your own editor/merge tool, and a per-file
+             "Mark Resolved" once fixed. Continue Merge only enables once every file is marked
+             resolved; Abort Merge rolls the whole merge back (git merge abort). -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsMergeConflictDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="920" Height="620"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="{Binding MergeConflictDialogTitle}"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,4" />
+                    <TextBlock Grid.Row="1"
+                               Text="Resolve each file in your own editor, then mark it resolved. Continue Merge finishes the merge once every file is resolved."
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,14" />
+
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="260" />
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Conflicted Files List -->
+                        <ListBox Grid.Column="0"
+                                 ItemsSource="{Binding MergeConflictFiles}"
+                                 SelectedItem="{Binding SelectedConflictFile}"
+                                 Style="{StaticResource ModernListBoxStyle}"
+                                 ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type models:MergeConflictFile}">
+                                    <Grid Margin="2,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="✔" FontWeight="Bold"
+                                                   Foreground="#10B981" Margin="0,0,6,0"
+                                                   Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}}" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding Path}"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       FontSize="12" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding ConflictLabel}"
+                                                       Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="10" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <!-- Ours / Theirs Diff Preview for the selected conflicted file -->
+                        <Grid Grid.Column="2" Visibility="{Binding SelectedConflictFile, Converter={StaticResource NullToVisConverter}}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="YOURS (against common base)"
+                                           FontSize="11" FontWeight="Bold"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" />
+                                <Button Grid.Column="1" Content="Open in Editor"
+                                        Style="{StaticResource StandardButtonStyle}"
+                                        Command="{Binding OpenConflictFileInEditorCommand}"
+                                        CommandParameter="{Binding SelectedConflictFile}" />
+                            </Grid>
+                            <controls:DiffViewerControl Grid.Row="1" DataContext="{Binding OursDiff}" />
+
+                            <TextBlock Grid.Row="2" Text="THEIRS (against common base)"
+                                       FontSize="11" FontWeight="Bold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,10,0,4" />
+                            <controls:DiffViewerControl Grid.Row="3" DataContext="{Binding TheirsDiff}" />
+
+                            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                <Button Content="Mark Resolved"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        Command="{Binding MarkConflictFileResolvedCommand}"
+                                        CommandParameter="{Binding SelectedConflictFile}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+                        <Button Content="{Binding AbortMergeButtonLabel}"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding AbortMergeCommand}"
+                                Foreground="#EF4444"
+                                Margin="0,0,8,0" />
+                        <Button Content="{Binding ContinueMergeButtonLabel}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding ContinueMergeCommand}"
+                                IsEnabled="{Binding CanContinueMerge}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: PUSH REJECTED - the remote has moved on (non-fast-forward), mirroring Git
+             Extensions' "Pull latest changes from remote repository" recovery prompt instead
+             of just showing the raw git error text. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsPushRejectedDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="480"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="⛔ Push Rejected"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,8" />
+                    <TextBlock Text="The remote has commits you don't have locally. Pull them in first, or overwrite the remote with your own history."
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,16" />
+
+                    <!-- Pull (Merge) Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,8">
+                        <Button Command="{Binding ConfirmPushRejectedPullMergeCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Pull with Merge" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <TextBlock Text="Pulls the remote's commits and merges them in, then pushes again automatically once that's clean."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <!-- Pull (Rebase) Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,8">
+                        <Button Command="{Binding ConfirmPushRejectedPullRebaseCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Pull with Rebase" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <TextBlock Text="Replays your local commits on top of the remote's, then pushes again automatically once that's clean."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <!-- Force Push With Lease Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,16">
+                        <Button Command="{Binding ConfirmForcePushWithLeaseCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Force Push With Lease" FontWeight="Bold" Foreground="#EF4444" />
+                                <TextBlock Text="Overwrites the remote branch with your local history. Refuses safely if someone else has pushed since your last fetch."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancel"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CancelPushRejectedDialogCommand}" />
                     </StackPanel>
                 </StackPanel>
             </Border>

@@ -16,6 +16,7 @@ namespace Girt.ViewModels
         private readonly Func<string> _getRepoPath;
         private readonly Func<bool, Task> _onRepositoryUpdated;
         private readonly Action<bool> _savePushAfterCommit;
+        private readonly Func<bool> _getIgnoreWhitespace;
 
         [ObservableProperty]
         private GitWorkingFile? _selectedFile;
@@ -66,13 +67,15 @@ namespace Girt.ViewModels
             Func<string> getRepoPath,
             Func<bool, Task> onRepositoryUpdated,
             bool initialPushAfterCommit,
-            Action<bool> savePushAfterCommit)
+            Action<bool> savePushAfterCommit,
+            Func<bool>? getIgnoreWhitespace = null)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
             _onRepositoryUpdated = onRepositoryUpdated;
             _savePushAfterCommit = savePushAfterCommit;
             _pushAfterCommit = initialPushAfterCommit;
+            _getIgnoreWhitespace = getIgnoreWhitespace ?? (() => false);
 
             // TotalChangesCount/HasStagedFiles/HasUnstagedFiles are computed from these two
             // collections but raise no notification of their own - they used to only update
@@ -148,6 +151,10 @@ namespace Girt.ViewModels
             _ = LoadFileDiffAsync(value);
         }
 
+        // Public so toggling "Ignore Whitespace Changes" can re-fetch the currently displayed
+        // diff immediately instead of only applying the next time a file is clicked.
+        public Task RefreshDiffAsync() => LoadFileDiffAsync(SelectedFile);
+
         private async Task LoadFileDiffAsync(GitWorkingFile? file)
         {
             DiffLines.Clear();
@@ -156,7 +163,7 @@ namespace Girt.ViewModels
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            var rawDiff = await _gitService.GetWorkingTreeFileDiffAsync(repoPath, file.Path, file.IsStaged);
+            var rawDiff = await _gitService.GetWorkingTreeFileDiffAsync(repoPath, file.Path, file.IsStaged, _getIgnoreWhitespace());
             var lines = await Task.Run(() => DiffParser.ParseUnifiedDiff(rawDiff));
 
             foreach (var l in lines)

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Girt.Models
 {
@@ -159,6 +161,12 @@ namespace Girt.Models
         public bool IsDimmed { get; set; } = false;
         public double DisplayOpacity => IsDimmed ? 0.35 : 1.0;
 
+        /// <summary>Whether this is the commit currently checked out - true if any of its ref
+        /// badges is the HEAD decoration or the local branch matching the current branch (see
+        /// GitCliService.ParseRefBadges). Drives the "you are here" marker in the commit graph
+        /// and row highlight, similar to Git Extensions' green square + tinted row.</summary>
+        public bool IsCurrentHead => Refs.Any(r => r.IsCurrentHead);
+
         // A commit's identity is its hash - every reload creates entirely new GitCommit
         // instances from a fresh `git log` parse, so reference equality would never recognize
         // "the same" commit across a refresh. Without this, SelectedCommit tracking (see
@@ -282,5 +290,41 @@ namespace Girt.Models
                 return folders;
             }
         }
+    }
+
+    public enum MergeConflictType
+    {
+        BothModified,
+        BothAdded,
+        BothDeleted,
+        AddedByUs,
+        AddedByThem,
+        DeletedByUs,
+        DeletedByThem
+    }
+
+    /// <summary>One unmerged path reported by `git status` mid-conflict. `IsResolved` is
+    /// mutable and observable so the conflict dialog's per-file checkmark and the
+    /// enable/disable state of "Continue Merge" update live as files are staged, without
+    /// rebuilding the whole list.</summary>
+    public partial class MergeConflictFile : ObservableObject
+    {
+        public string Path { get; set; } = string.Empty;
+        public MergeConflictType ConflictType { get; set; }
+
+        [ObservableProperty]
+        private bool _isResolved;
+
+        public string ConflictLabel => ConflictType switch
+        {
+            MergeConflictType.BothModified => "Both modified",
+            MergeConflictType.BothAdded => "Both added",
+            MergeConflictType.BothDeleted => "Both deleted",
+            MergeConflictType.AddedByUs => "Added by us",
+            MergeConflictType.AddedByThem => "Added by them",
+            MergeConflictType.DeletedByUs => "Deleted by us",
+            MergeConflictType.DeletedByThem => "Deleted by them",
+            _ => "Conflict"
+        };
     }
 }

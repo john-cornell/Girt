@@ -135,6 +135,60 @@ in sync when the Settings dialog changes it. If a setting is editable from more 
 the UI, route both through the same ViewModel property rather than letting each surface keep its
 own copy - that's exactly the class of bug rule 6 covers, just for settings instead of counts.
 
+## 12. `Command` + `RelativeSource AncestorType=Window` through a `ContextMenu` is UNRELIABLE —
+this has now bitten us at least 4 separate times
+
+**Do not bind `Command` on a `MenuItem` inside a `ContextMenu` via
+`RelativeSource FindAncestor, AncestorType=Window`.** A `ContextMenu` renders in its own `Popup`,
+and that binding path has silently failed to resolve — no error, no crash, the click just does
+nothing — for real, shipped menu items in this exact codebase, repeatedly:
+
+1. `TogglePinBranchCommand` (branch tree pin/unpin) — fixed via `OnTogglePinBranchClicked`.
+2. `ToggleGroupBranchesIntoFoldersCommand` (flat/folder view toggle) — fixed via
+   `OnToggleGroupBranchesIntoFoldersClicked`.
+3. The "Add folder to .gitignore" submenu's `IgnoreFolderCommand` (a nested `ItemsSource`-generated
+   submenu, so a second hop deeper) — fixed via `OnIgnoreFolderInWorkingChangesClicked` /
+   `OnIgnoreFolderInCommitDetailClicked`.
+4. `DeleteBranchCommand` in the branch tree's context menu — worked in the old flat-ListBox tree
+   rendering, broke silently after the TreeView conversion (rule 10) despite looking identical to
+   sibling items (`MergeIntoCurrentBranchCommand`, `RebaseCurrentBranchOnCommand`,
+   `CopyBranchNameCommand`, `CheckoutBranchCommand`) that still appear to work with the exact same
+   binding syntax — fixed via `OnDeleteBranchClicked`.
+
+That last one is the important lesson: **this is not consistently reproducible**. Some menu items
+using this exact pattern work; others silently don't; and one that worked can silently break after
+an unrelated change elsewhere (like re-templating the containing control). Don't treat "it looks
+identical to a working one" as proof it's fine, and don't spend time trying to find the precise
+Popup/visual-tree condition that makes it fail — the fix is always the same and always cheap:
+
+```csharp
+private void OnXClicked(object sender, RoutedEventArgs e)
+{
+    if (sender is not MenuItem menuItem) return;
+    var branch = menuItem.DataContext switch
+    {
+        GitBranch b => b,
+        BranchTreeItem { IsFolder: false } item => item.Branch,
+        _ => null
+    };
+    if (branch != null) _viewModel.BranchList.SomeCommand.Execute(branch);
+}
+```
+`Click="OnXClicked"` in XAML, resolve whatever the command needs off `menuItem.DataContext`
+in code-behind, call `.Execute(...)` directly. This works because it never needs to walk back out
+through the Popup boundary at all.
+
+**If a `ContextMenu` item's Command silently does nothing when clicked — even if it "should" work,
+even if a sibling item with identical-looking binding works fine — convert it to this pattern
+first.** Don't assume it's a different bug (a guard, a `CanExecute`, stale state) until you've
+ruled this out, since it's now the single most common cause of "the button doesn't work" reports
+in this app's whole history. The existing Command+RelativeSource items that still work
+(Merge/Rebase/Reset/Copy/Checkout as of this writing) are not proof the pattern is safe — they may
+simply not have been hit by whatever timing/nesting condition triggers the failure yet. Per the
+"no speculative abstractions" project rule (CLAUDE.md), don't proactively convert them until one
+actually breaks — but when one does, this is the fix, immediately, no further investigation
+needed.
+
 ---
 
 **Before shipping a change to any of the files above:** rebuild, run the full test suite (currently

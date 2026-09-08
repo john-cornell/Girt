@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,7 +28,7 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.4.31";
+        public const string AppVersion = "0.4.43";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -83,6 +85,22 @@ namespace Girt.ViewModels
             _themeService.SaveAutoRefresh(value);
         }
 
+        // Applies to every diff view (commit detail, working tree, unpushed review) via each
+        // ViewModel's injected getIgnoreWhitespace delegate - see their Get*DiffAsync calls.
+        [ObservableProperty]
+        private bool _ignoreWhitespaceInDiffs;
+
+        partial void OnIgnoreWhitespaceInDiffsChanged(bool value)
+        {
+            _themeService.SaveIgnoreWhitespaceInDiffs(value);
+
+            // Re-fetch whatever diff is currently on screen so the toggle feels immediate
+            // instead of only applying the next time a file is clicked.
+            _ = CommitDetail.RefreshDiffAsync();
+            _ = WorkingChanges.RefreshDiffAsync();
+            _ = UnpushedChanges.RefreshDiffAsync();
+        }
+
         [ObservableProperty]
         private string _statusMessage = "Ready";
 
@@ -120,6 +138,65 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private GitResetMode _resetMode = GitResetMode.Soft;
 
+        // Merge Preview Dialog State - shown before a merge actually runs, so the user sees
+        // what's about to happen (commits and files coming in) instead of just a bare
+        // "are you sure?" prompt.
+        [ObservableProperty]
+        private bool _isMergePreviewDialogOpen;
+
+        [ObservableProperty]
+        private string _mergePreviewSourceDisplay = string.Empty;
+
+        [ObservableProperty]
+        private string _mergePreviewModeLabel = string.Empty;
+
+        public ObservableCollection<GitCommit> MergePreviewCommits { get; } = new();
+        public ObservableCollection<GitFileDiff> MergePreviewFiles { get; } = new();
+
+        private string? _pendingMergeTargetRef;
+        private bool _pendingMergeSquash;
+        private bool _pendingMergeNoFf;
+
+        // Merge Conflict Dialog State - shown when MergeAsync fails and `git status` reports
+        // unmerged paths. Resolution itself happens in the user's own editor/merge tool
+        // (external handoff, not an in-app 3-way editor) - this dialog's job is just to make
+        // the conflicted files, and what each side actually changed, visible and trackable.
+        [ObservableProperty]
+        private bool _isMergeConflictDialogOpen;
+
+        [ObservableProperty]
+        private MergeConflictFile? _selectedConflictFile;
+
+        [ObservableProperty]
+        private bool _canContinueMerge;
+
+        // The conflict dialog is shared by three producers (an explicit merge, a plain pull,
+        // and a rebase pull) - a rebase leaves the repo in a different git state than a merge
+        // (mid-rebase vs mid-merge), so Abort/Continue need different underlying commands, and
+        // the dialog's own title/button labels are kept in sync with which one is active.
+        private bool _conflictIsRebase;
+
+        [ObservableProperty]
+        private string _mergeConflictDialogTitle = "⚠ Merge Conflicts";
+
+        [ObservableProperty]
+        private string _continueMergeButtonLabel = "Continue Merge";
+
+        [ObservableProperty]
+        private string _abortMergeButtonLabel = "Abort Merge";
+
+        public ObservableCollection<MergeConflictFile> MergeConflictFiles { get; } = new();
+        public SimpleDiffViewModel OursDiff { get; } = new();
+        public SimpleDiffViewModel TheirsDiff { get; } = new();
+
+        partial void OnSelectedConflictFileChanged(MergeConflictFile? value) => _ = LoadConflictDiffsAsync(value);
+
+        // Push Rejected Dialog State - shown when a push fails specifically because the remote
+        // has moved on (non-fast-forward), mirroring Git Extensions' "Pull latest changes from
+        // remote repository" recovery prompt instead of just dumping the raw git error.
+        [ObservableProperty]
+        private bool _isPushRejectedDialogOpen;
+
         public BranchListViewModel BranchList { get; }
         public CommitHistoryViewModel CommitHistory { get; }
         public CommitDetailViewModel CommitDetail { get; }
@@ -155,14 +232,15 @@ namespace Girt.ViewModels
                 _themeService.LoadPinnedBranches,
                 _themeService.SavePinnedBranches);
             CommitHistory = new CommitHistoryViewModel(_gitService, () => RepositoryPath, OnCommitSelected);
-            CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath);
-            UnpushedChanges = new UnpushedChangesViewModel(_gitService, () => RepositoryPath);
+            CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);
+            UnpushedChanges = new UnpushedChangesViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);
             WorkingChanges = new WorkingChangesViewModel(
                 _gitService,
                 () => RepositoryPath,
                 OnWorkingChangesUpdatedAsync,
                 _themeService.LoadPushAfterCommit(),
-                _themeService.SavePushAfterCommit);
+                _themeService.SavePushAfterCommit,
+                () => IgnoreWhitespaceInDiffs);
             Settings = new SettingsViewModel(
                 _gitService,
                 () => RepositoryPath,
@@ -175,6 +253,7 @@ namespace Girt.ViewModels
 
             _pushPillOpensReview = _themeService.LoadPushPillOpensReview();
             _autoRefresh = _themeService.LoadAutoRefresh();
+            _ignoreWhitespaceInDiffs = _themeService.LoadIgnoreWhitespaceInDiffs();
 
             // Hook branch selection change to update association view immediately
             BranchList.PropertyChanged += (s, e) =>
@@ -393,7 +472,18 @@ namespace Girt.ViewModels
             {
                 Application.Current?.Dispatcher.InvokeAsync(async () =>
                 {
-                    if (!IsLoading && IsWorkingChangesView && !JustRanOwnGitCommand()) await WorkingChanges.LoadChangesAsync();
+                    if (!IsLoading && IsWorkingChangesView && !JustRanOwnGitCommand())
+                    {
+                        await WorkingChanges.LoadChangesAsync();
+
+                        // LoadChangesAsync only refreshes WorkingChanges' own StagedFiles/
+                        // UnstagedFiles - without this, editing a file externally (another
+                        // editor, a build step) while looking at this tab updated the file list
+                        // correctly but left the toolbar's "N to commit" pill (RepoStatus.
+                        // UncommittedCount) showing whatever it was before, e.g. "0 to commit"
+                        // next to a panel full of real unstaged files.
+                        UpdateRepoStatusLocally(aheadDelta: 0);
+                    }
                 });
             }, null, dueTime: 400, period: Timeout.Infinite);
         }
@@ -529,6 +619,7 @@ namespace Girt.ViewModels
         {
             CurrentView = ActiveViewMode.WorkingChanges;
             await WorkingChanges.LoadChangesAsync();
+            UpdateRepoStatusLocally(aheadDelta: 0);
         }
 
         [RelayCommand]
@@ -547,9 +638,83 @@ namespace Girt.ViewModels
                     await RefreshRepositoryAsync();
                     StatusMessage = "Push successful!";
                 }
+                else if (IsNonFastForwardRejection(output))
+                {
+                    IsPushRejectedDialogOpen = true;
+                    StatusMessage = "Push rejected - the remote has commits you don't have locally.";
+                }
                 else
                 {
                     MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        private static bool IsNonFastForwardRejection(string output) =>
+            output.Contains("[rejected]") && (output.Contains("fetch first") || output.Contains("non-fast-forward"));
+
+        [RelayCommand]
+        public void CancelPushRejectedDialog() => IsPushRejectedDialogOpen = false;
+
+        [RelayCommand]
+        public async Task ConfirmPushRejectedPullMergeAsync()
+        {
+            IsPushRejectedDialogOpen = false;
+            await PullThenPushAsync(rebase: false);
+        }
+
+        [RelayCommand]
+        public async Task ConfirmPushRejectedPullRebaseAsync()
+        {
+            IsPushRejectedDialogOpen = false;
+            await PullThenPushAsync(rebase: true);
+        }
+
+        private async Task PullThenPushAsync(bool rebase)
+        {
+            // Only retry the push once the pull actually landed clean - a conflict leaves the
+            // conflict dialog open instead, and pushing a half-resolved merge/rebase would be
+            // wrong, so this must not fire in that case.
+            var pulled = await DoPullAsync(rebase);
+            if (pulled)
+            {
+                await PushAsync();
+            }
+        }
+
+        [RelayCommand]
+        public async Task ConfirmForcePushWithLeaseAsync()
+        {
+            IsPushRejectedDialogOpen = false;
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var result = MessageBox.Show(
+                "Force push with lease overwrites the remote branch with your local history.\n\n" +
+                "Unlike a plain force push, this fails safely if someone else has pushed since your last fetch - " +
+                "but it will still discard whatever they pushed if you proceed anyway.\n\nForce push now?",
+                "Force Push With Lease",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            IsLoading = true;
+            StatusMessage = "Force pushing with lease...";
+            try
+            {
+                var (success, output) = await _gitService.ForcePushWithLeaseAsync(RepositoryPath);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = "Force push successful!";
+                }
+                else
+                {
+                    MessageBox.Show($"Force push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             finally
@@ -621,7 +786,11 @@ namespace Girt.ViewModels
             IsPullChoiceDialogOpen = false;
         }
 
-        private async Task DoPullAsync(bool rebase)
+        // Returns whether the pull landed clean - false both for a hard failure and for a
+        // conflict (which opens the conflict dialog instead of failing outright), so callers
+        // that chain more work after a pull (see PullThenPushAsync) only proceed on a real
+        // success.
+        private async Task<bool> DoPullAsync(bool rebase)
         {
             IsLoading = true;
             StatusMessage = rebase ? "Pulling (rebase) from remote..." : "Pulling commits from remote...";
@@ -633,11 +802,34 @@ namespace Girt.ViewModels
                 {
                     await RefreshRepositoryAsync();
                     StatusMessage = "Pull successful!";
+                    return true;
+                }
+
+                // `git pull` is fetch+merge (or fetch+rebase) under the hood, so it can conflict
+                // exactly like an explicit merge - route it through the same conflict dialog
+                // instead of just dumping the raw git error, remembering which operation is
+                // actually in progress so Abort/Continue run the right underlying commands.
+                var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
+                if (conflicts.Count > 0)
+                {
+                    _conflictIsRebase = rebase;
+                    MergeConflictDialogTitle = rebase ? "⚠ Rebase Conflicts" : "⚠ Merge Conflicts";
+                    ContinueMergeButtonLabel = rebase ? "Continue Rebase" : "Continue Merge";
+                    AbortMergeButtonLabel = rebase ? "Abort Rebase" : "Abort Merge";
+
+                    MergeConflictFiles.Clear();
+                    foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
+                    SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
+                    CanContinueMerge = false;
+                    IsMergeConflictDialogOpen = true;
+                    StatusMessage = $"{(rebase ? "Rebase" : "Pull")} stopped - {conflicts.Count} file(s) have conflicts.";
                 }
                 else
                 {
                     MessageBox.Show($"Pull failed:\n{output}", "Git Pull Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+
+                return false;
             }
             finally
             {
@@ -893,6 +1085,9 @@ namespace Girt.ViewModels
             await ExecuteMergeAsync(parameter, squash: false, noFf: true);
         }
 
+        // Gathers what a merge would actually do (incoming commits, changed files) and opens
+        // the preview dialog for confirmation - replaces the previous bare Yes/No prompt, which
+        // gave no idea what was about to land.
         private async Task ExecuteMergeAsync(object? parameter, bool squash, bool noFf)
         {
             var targetRef = parameter switch
@@ -912,31 +1107,190 @@ namespace Girt.ViewModels
                 _ => targetRef
             };
 
-            var modeLabel = squash ? " (Squash)" : noFf ? " (No Fast-Forward)" : "";
-            var result = MessageBox.Show(
-                $"Merge {targetDisplay} into current branch '{CurrentBranch}'{modeLabel}?",
-                "Confirm Merge",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
+            _pendingMergeTargetRef = targetRef;
+            _pendingMergeSquash = squash;
+            _pendingMergeNoFf = noFf;
 
-            if (result != MessageBoxResult.Yes) return;
+            MergePreviewSourceDisplay = targetDisplay;
+            MergePreviewModeLabel = squash ? "Squash" : noFf ? "No Fast-Forward" : "Default";
+
+            MergePreviewCommits.Clear();
+            MergePreviewFiles.Clear();
+
+            var commitsTask = _gitService.GetCommitsBetweenAsync(RepositoryPath, "HEAD", targetRef);
+            var filesTask = _gitService.GetDiffStatBetweenAsync(RepositoryPath, "HEAD", targetRef);
+            await Task.WhenAll(commitsTask, filesTask);
+
+            foreach (var commit in await commitsTask) MergePreviewCommits.Add(commit);
+            foreach (var file in await filesTask) MergePreviewFiles.Add(file);
+
+            IsMergePreviewDialogOpen = true;
+        }
+
+        [RelayCommand]
+        public void CancelMergePreviewDialog()
+        {
+            IsMergePreviewDialogOpen = false;
+            _pendingMergeTargetRef = null;
+        }
+
+        [RelayCommand]
+        public async Task ConfirmMergeAsync()
+        {
+            var targetRef = _pendingMergeTargetRef;
+            IsMergePreviewDialogOpen = false;
+            if (string.IsNullOrEmpty(targetRef) || string.IsNullOrEmpty(RepositoryPath)) return;
 
             // Local-only - no busy overlay, same as commit/reset/cherry-pick/revert.
             StatusMessage = $"Merging {targetRef} into {CurrentBranch}...";
 
-            var (success, output) = await _gitService.MergeAsync(RepositoryPath, targetRef, squash, noFf);
+            var (success, output) = await _gitService.MergeAsync(RepositoryPath, targetRef, _pendingMergeSquash, _pendingMergeNoFf);
+            _pendingMergeTargetRef = null;
+
             if (success)
             {
                 // A merge can introduce any number of commits from the other side - not safe to
                 // splice locally like a single new commit, so the graph is the one thing left
                 // stale here until F5/AutoRefresh. Working tree and pills still update.
                 await RefreshPillsAndWorkingChangesAsync();
-                StatusMessage = $"Merged successfully.";
+                StatusMessage = "Merged successfully.";
+                return;
+            }
+
+            var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
+            if (conflicts.Count > 0)
+            {
+                _conflictIsRebase = false;
+                MergeConflictDialogTitle = "⚠ Merge Conflicts";
+                ContinueMergeButtonLabel = "Continue Merge";
+                AbortMergeButtonLabel = "Abort Merge";
+
+                MergeConflictFiles.Clear();
+                foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
+                SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
+                CanContinueMerge = false;
+                IsMergeConflictDialogOpen = true;
+                StatusMessage = $"Merge stopped - {conflicts.Count} file(s) have conflicts.";
             }
             else
             {
-                MessageBox.Show($"Merge encountered conflicts or failed:\n{output}", "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Merge failed:\n{output}", "Merge Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            await RefreshPillsAndWorkingChangesAsync();
+        }
+
+        private async Task LoadConflictDiffsAsync(MergeConflictFile? file)
+        {
+            OursDiff.SetDiff("");
+            TheirsDiff.SetDiff("");
+            if (file == null || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var (oursDiff, theirsDiff) = await _gitService.GetConflictDiffsAsync(RepositoryPath, file.Path);
+            OursDiff.SetDiff(oursDiff);
+            TheirsDiff.SetDiff(theirsDiff);
+        }
+
+        [RelayCommand]
+        public void OpenConflictFileInEditor(MergeConflictFile? file)
+        {
+            if (file == null || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(Path.Combine(RepositoryPath, file.Path)) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not open '{file.Path}':\n{ex.Message}", "Open File", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        [RelayCommand]
+        public async Task MarkConflictFileResolvedAsync(MergeConflictFile? file)
+        {
+            if (file == null || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var (success, output) = await _gitService.StageFileAsync(RepositoryPath, file.Path);
+            if (success)
+            {
+                file.IsResolved = true;
+                CanContinueMerge = MergeConflictFiles.Count > 0 && MergeConflictFiles.All(f => f.IsResolved);
+            }
+            else
+            {
+                MessageBox.Show($"Could not stage '{file.Path}':\n{output}", "Mark Resolved", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        [RelayCommand]
+        public async Task ContinueMergeAsync()
+        {
+            if (!CanContinueMerge || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var (success, output) = _conflictIsRebase
+                ? await _gitService.ContinueRebaseAsync(RepositoryPath)
+                : await _gitService.ContinueMergeAsync(RepositoryPath);
+
+            if (success)
+            {
+                IsMergeConflictDialogOpen = false;
                 await RefreshPillsAndWorkingChangesAsync();
+                StatusMessage = _conflictIsRebase ? "Rebase completed." : "Merge completed.";
+                return;
+            }
+
+            // A rebase replays one commit at a time - the very next one can conflict again, so
+            // re-check instead of treating this as a hard failure, or a multi-commit conflicted
+            // rebase would dead-end after its first file is resolved.
+            var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
+            if (conflicts.Count > 0)
+            {
+                MergeConflictFiles.Clear();
+                foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
+                SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
+                CanContinueMerge = false;
+                StatusMessage = $"{(_conflictIsRebase ? "Rebase" : "Merge")} stopped - {conflicts.Count} file(s) have conflicts.";
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"Could not complete the {(_conflictIsRebase ? "rebase" : "merge")}:\n{output}",
+                    _conflictIsRebase ? "Continue Rebase" : "Continue Merge",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        [RelayCommand]
+        public async Task AbortMergeAsync()
+        {
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var opLabel = _conflictIsRebase ? "rebase" : "merge";
+            var result = MessageBox.Show(
+                $"Abort the {opLabel} and discard all conflict resolution progress?\n\nYour branch will be restored to how it was before the {opLabel} started.",
+                _conflictIsRebase ? "Abort Rebase" : "Abort Merge",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            var (success, output) = _conflictIsRebase
+                ? await _gitService.AbortRebaseAsync(RepositoryPath)
+                : await _gitService.AbortMergeAsync(RepositoryPath);
+
+            if (success)
+            {
+                IsMergeConflictDialogOpen = false;
+                await RefreshPillsAndWorkingChangesAsync();
+                StatusMessage = _conflictIsRebase ? "Rebase aborted." : "Merge aborted.";
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"Could not abort the {opLabel}:\n{output}",
+                    _conflictIsRebase ? "Abort Rebase" : "Abort Merge",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

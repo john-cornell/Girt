@@ -12,9 +12,9 @@ namespace Girt.Services
         Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath);
         Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000);
         Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash);
-        Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath);
+        Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath, bool ignoreWhitespace = false, string? diffAgainstRef = null);
         Task<IReadOnlyList<GitFileDiff>> GetUnpushedDiffAsync(string repoPath);
-        Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath);
+        Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath, bool ignoreWhitespace = false);
         Task<(bool Success, string Output)> CheckoutBranchAsync(string repoPath, string branchName);
         Task<(bool Success, string Output)> CreateBranchAsync(string repoPath, string branchName, string? startPoint = null);
         Task<(bool Success, string Output)> DeleteBranchAsync(string repoPath, string branchName, bool force = false);
@@ -30,7 +30,7 @@ namespace Girt.Services
         Task<(bool Success, string Output)> UnstageAllAsync(string repoPath);
         Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, string filePath);
         Task<(bool Success, string Output)> CommitAsync(string repoPath, string message);
-        Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged);
+        Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
         Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false);
         Task<(bool Success, string Output)> FetchAllAsync(string repoPath);
@@ -48,5 +48,16 @@ namespace Girt.Services
         Task<(bool Success, string Output)> CherryPickCommitAsync(string repoPath, string commitHash);
         Task<(bool Success, string Output)> MergeAsync(string repoPath, string targetRef, bool squash = false, bool noFf = false);
         Task<(bool Success, string Output)> RebaseAsync(string repoPath, string targetRef);
+
+        // Merge preview & conflict resolution
+        Task<IReadOnlyList<GitCommit>> GetCommitsBetweenAsync(string repoPath, string fromRef, string toRef, int maxCount = 200);
+        Task<IReadOnlyList<GitFileDiff>> GetDiffStatBetweenAsync(string repoPath, string fromRef, string toRef);
+        Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath);
+        Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath);
+        Task<(bool Success, string Output)> AbortMergeAsync(string repoPath);
+        Task<(bool Success, string Output)> ContinueMergeAsync(string repoPath);
+        Task<(bool Success, string Output)> AbortRebaseAsync(string repoPath);
+        Task<(bool Success, string Output)> ContinueRebaseAsync(string repoPath);
+        Task<(bool Success, string Output)> ForcePushWithLeaseAsync(string repoPath);
     }
 }

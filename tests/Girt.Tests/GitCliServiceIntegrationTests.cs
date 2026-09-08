@@ -196,6 +196,105 @@ namespace Girt.Tests
             Assert.Null(afterUnset);
         }
 
+        [Fact]
+        public async Task Merge_WithRealConflict_IsDetectedAndDiffsAreExtractedPerSide_ThenAbortRestoresCleanState()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nline two\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"base\"");
+
+            RunGit("checkout -b feature");
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nTHEIRS CHANGE\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"feature change\"");
+
+            RunGit("checkout main");
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nOURS CHANGE\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"main change\"");
+
+            var (mergeSuccess, _) = await _gitService.MergeAsync(_testRepoPath, "feature");
+            Assert.False(mergeSuccess);
+
+            var conflicts = await _gitService.GetConflictedFilesAsync(_testRepoPath);
+            Assert.Single(conflicts);
+            Assert.Equal("shared.txt", conflicts[0].Path);
+            Assert.Equal(MergeConflictType.BothModified, conflicts[0].ConflictType);
+
+            var (oursDiff, theirsDiff) = await _gitService.GetConflictDiffsAsync(_testRepoPath, "shared.txt");
+            Assert.Contains("+OURS CHANGE", oursDiff);
+            Assert.Contains("+THEIRS CHANGE", theirsDiff);
+            Assert.DoesNotContain("THEIRS CHANGE", oursDiff);
+            Assert.DoesNotContain("OURS CHANGE", theirsDiff);
+
+            var (abortSuccess, _) = await _gitService.AbortMergeAsync(_testRepoPath);
+            Assert.True(abortSuccess);
+
+            var conflictsAfterAbort = await _gitService.GetConflictedFilesAsync(_testRepoPath);
+            Assert.Empty(conflictsAfterAbort);
+            Assert.Equal("OURS CHANGE", (await File.ReadAllTextAsync(Path.Combine(_testRepoPath, "shared.txt"))).Split('\n')[1].Trim());
+        }
+
+        [Fact]
+        public async Task Merge_WithRealConflict_ResolveStageAndContinue_CompletesTheMerge()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nline two\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"base\"");
+
+            RunGit("checkout -b feature");
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nTHEIRS CHANGE\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"feature change\"");
+
+            RunGit("checkout main");
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nOURS CHANGE\nline three\n");
+            RunGit("add shared.txt");
+            RunGit("commit -m \"main change\"");
+
+            await _gitService.MergeAsync(_testRepoPath, "feature");
+
+            // Simulates the user fixing the file in their own editor, then Girt staging it.
+            File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nRESOLVED\nline three\n");
+            var (stageSuccess, _) = await _gitService.StageFileAsync(_testRepoPath, "shared.txt");
+            Assert.True(stageSuccess);
+
+            Assert.Empty(await _gitService.GetConflictedFilesAsync(_testRepoPath));
+
+            var (continueSuccess, _) = await _gitService.ContinueMergeAsync(_testRepoPath);
+            Assert.True(continueSuccess);
+
+            var commits = await _gitService.GetCommitsAsync(_testRepoPath);
+            Assert.Contains(commits, c => c.Subject.Contains("Merge branch"));
+        }
+
+        [Fact]
+        public async Task GetCommitsBetweenAsync_AndGetDiffStatBetweenAsync_ReportWhatAMergeWouldBringIn()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "a.txt"), "1");
+            RunGit("add a.txt");
+            RunGit("commit -m \"base\"");
+
+            RunGit("checkout -b feature");
+            File.WriteAllText(Path.Combine(_testRepoPath, "b.txt"), "1");
+            RunGit("add b.txt");
+            RunGit("commit -m \"feature adds b\"");
+            File.WriteAllText(Path.Combine(_testRepoPath, "c.txt"), "1");
+            RunGit("add c.txt");
+            RunGit("commit -m \"feature adds c\"");
+            RunGit("checkout main");
+
+            var incomingCommits = await _gitService.GetCommitsBetweenAsync(_testRepoPath, "main", "feature");
+            Assert.Equal(2, incomingCommits.Count);
+            Assert.Contains(incomingCommits, c => c.Subject == "feature adds b");
+            Assert.Contains(incomingCommits, c => c.Subject == "feature adds c");
+
+            var changedFiles = await _gitService.GetDiffStatBetweenAsync(_testRepoPath, "main", "feature");
+            Assert.Equal(2, changedFiles.Count);
+            Assert.Contains(changedFiles, f => f.Path == "b.txt");
+            Assert.Contains(changedFiles, f => f.Path == "c.txt");
+        }
+
         public void Dispose()
         {
             try

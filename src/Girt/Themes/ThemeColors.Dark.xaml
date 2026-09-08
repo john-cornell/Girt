@@ -9,6 +9,9 @@
     <SolidColorBrush x:Key="HoverBackgroundBrush" Color="#30363D" />
     <SolidColorBrush x:Key="SelectedBackgroundBrush" Color="#1F6FEB" Opacity="0.25" />
     <SolidColorBrush x:Key="ActiveItemHighlightBrush" Color="#388BFD" Opacity="0.15" />
+    <!-- Subtle persistent tint for the commit row that's currently checked out ("you are here"),
+         same green as the HEAD ref badge - low opacity so selection highlight still reads on top. -->
+    <SolidColorBrush x:Key="CurrentHeadRowBackgroundBrush" Color="#10B981" Opacity="0.12" />
 
     <!-- Foregrounds / Texts -->
     <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F0F6FC" />

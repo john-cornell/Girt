@@ -114,14 +114,33 @@ namespace Girt.Controls
             // Line coming in from top to node center
             dc.DrawLine(nodePen, new Point(nodeX, 0), new Point(nodeX, halfHeight));
 
-            // 3. Draw commit node circle
-            var radius = isDimmed ? 3.5 : 4.5;
-            dc.DrawEllipse(nodeBrush, null, new Point(nodeX, halfHeight), radius, radius);
+            // 3. Draw the commit node - a filled square in a fixed accent color for the commit
+            // that's currently checked out ("you are here", matching the row tint from
+            // MainWindow.xaml's IsCurrentHead trigger and Git Extensions' own green marker),
+            // otherwise the normal lane-colored circle.
+            if (commit.IsCurrentHead && !isDimmed)
+            {
+                var markerBrush = GetBrush(CurrentHeadColor, isDimmed: false);
+                var size = 7.0;
+                dc.DrawRectangle(markerBrush, null, new Rect(nodeX - size / 2, halfHeight - size / 2, size, size));
 
-            // Inner circle dot
-            var innerBrush = isDimmed ? GetDimmedWhiteBrush() : Brushes.White;
-            dc.DrawEllipse(innerBrush, null, new Point(nodeX, halfHeight), isDimmed ? 1.2 : 1.8, isDimmed ? 1.2 : 1.8);
+                var innerSize = 3.0;
+                dc.DrawRectangle(Brushes.White, null, new Rect(nodeX - innerSize / 2, halfHeight - innerSize / 2, innerSize, innerSize));
+            }
+            else
+            {
+                var radius = isDimmed ? 3.5 : 4.5;
+                dc.DrawEllipse(nodeBrush, null, new Point(nodeX, halfHeight), radius, radius);
+
+                var innerBrush = isDimmed ? GetDimmedWhiteBrush() : Brushes.White;
+                dc.DrawEllipse(innerBrush, null, new Point(nodeX, halfHeight), isDimmed ? 1.2 : 1.8, isDimmed ? 1.2 : 1.8);
+            }
         }
+
+        // Same green as the HEAD ref badge (GitRefBadge.BackgroundColor for GitRefType.Head) and
+        // the CurrentHeadRowBackgroundBrush row tint, so the marker, badge, and row highlight all
+        // read as the same "current" concept.
+        private const string CurrentHeadColor = "#10B981";
 
         private static readonly Dictionary<string, SolidColorBrush> BrushCache = new(StringComparer.OrdinalIgnoreCase);
         private static SolidColorBrush? _dimmedWhiteBrush;

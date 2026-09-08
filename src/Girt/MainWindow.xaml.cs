@@ -101,7 +101,10 @@ namespace Girt
             }
         }
 
-        private void RestoreFromTray()
+        // Internal (not private) so App.xaml.cs can call it as the single-instance activation
+        // handler - a second launch's "please come to foreground" request uses the exact same
+        // restore logic as the tray icon's own double-click/"Open Girt".
+        internal void RestoreFromTray()
         {
             Show();
             WindowState = WindowState.Normal;
@@ -211,6 +214,27 @@ namespace Girt
             if (branch != null)
             {
                 _viewModel.BranchList.TogglePinBranchCommand.Execute(branch);
+            }
+        }
+
+        // Same rationale as OnTogglePinBranchClicked - Command+RelativeSource to reach
+        // DeleteBranchCommand through the branch tree's ContextMenu proved unreliable there
+        // (reported as "still nothing happens" even after the tree TreeViewItem template
+        // rewrite), so resolve the branch directly off the clicked MenuItem's DataContext.
+        private void OnDeleteBranchClicked(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem) return;
+
+            var branch = menuItem.DataContext switch
+            {
+                GitBranch b => b,
+                BranchTreeItem { IsFolder: false } item => item.Branch,
+                _ => null
+            };
+
+            if (branch != null)
+            {
+                _viewModel.BranchList.DeleteBranchCommand.Execute(branch);
             }
         }
 

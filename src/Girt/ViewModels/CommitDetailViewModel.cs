@@ -13,6 +13,7 @@ namespace Girt.ViewModels
     {
         private readonly IGitService _gitService;
         private readonly Func<string> _getRepoPath;
+        private readonly Func<bool> _getIgnoreWhitespace;
 
         [ObservableProperty]
         private GitCommit? _commit;
@@ -29,10 +30,11 @@ namespace Girt.ViewModels
         public ObservableCollection<GitFileDiff> ChangedFiles { get; } = new();
         public ObservableCollection<DiffLine> DiffLines { get; } = new();
 
-        public CommitDetailViewModel(IGitService gitService, Func<string> getRepoPath)
+        public CommitDetailViewModel(IGitService gitService, Func<string> getRepoPath, Func<bool>? getIgnoreWhitespace = null)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
+            _getIgnoreWhitespace = getIgnoreWhitespace ?? (() => false);
         }
 
         public async Task SetCommitAsync(GitCommit? commit)
@@ -83,6 +85,10 @@ namespace Girt.ViewModels
             _ = LoadFileDiffAsync(value);
         }
 
+        // Public so toggling "Ignore Whitespace Changes" can re-fetch the currently displayed
+        // diff immediately instead of only applying the next time a file is clicked.
+        public Task RefreshDiffAsync() => LoadFileDiffAsync(SelectedFile);
+
         private async Task LoadFileDiffAsync(GitFileDiff? file)
         {
             DiffLines.Clear();
@@ -94,7 +100,11 @@ namespace Girt.ViewModels
             IsLoadingDiff = true;
             try
             {
-                var rawDiff = await _gitService.GetRawFileDiffAsync(repoPath, Commit.Hash, file.Path);
+                // A merge commit (2+ parents) needs a parent to diff against - see
+                // GitCliService.GetRawFileDiffAsync for why plain `git show` comes back empty
+                // for one. First parent matches what most git tools show for a merge commit.
+                var diffAgainstRef = Commit.ParentHashes.Count > 1 ? Commit.ParentHashes[0] : null;
+                var rawDiff = await _gitService.GetRawFileDiffAsync(repoPath, Commit.Hash, file.Path, _getIgnoreWhitespace(), diffAgainstRef);
                 var parsedLines = await Task.Run(() => DiffParser.ParseUnifiedDiff(rawDiff));
 
                 foreach (var line in parsedLines)

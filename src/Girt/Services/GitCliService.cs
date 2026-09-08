@@ -235,17 +235,18 @@ namespace Girt.Services
             }
         }
 
-        public async Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged)
+        public async Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
+            var wsFlag = ignoreWhitespace ? " -w" : "";
             if (isStaged)
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} --cached -- \"{cleanPath}\"").ConfigureAwait(false);
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines}{wsFlag} --cached -- \"{cleanPath}\"").ConfigureAwait(false);
                 return success ? output : "";
             }
             else
             {
-                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} -- \"{cleanPath}\"").ConfigureAwait(false);
+                var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines}{wsFlag} -- \"{cleanPath}\"").ConfigureAwait(false);
                 if (success && !string.IsNullOrWhiteSpace(output))
                 {
                     return output;
@@ -456,6 +457,127 @@ namespace Girt.Services
             return (success, combined);
         }
 
+        // Three-dot range: diff against the merge-base of the two refs, i.e. exactly the file
+        // changes a merge of toRef into fromRef would introduce - not a plain two-dot diff,
+        // which would also include fromRef's own commits not yet in toRef.
+        public async Task<IReadOnlyList<GitFileDiff>> GetDiffStatBetweenAsync(string repoPath, string fromRef, string toRef)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --numstat \"{fromRef}...{toRef}\"").ConfigureAwait(false);
+            return success ? ParseNumstatOutput(output) : new List<GitFileDiff>();
+        }
+
+        public async Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath)
+        {
+            var conflicts = new List<MergeConflictFile>();
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall").ConfigureAwait(false);
+            if (!success || string.IsNullOrWhiteSpace(output)) return conflicts;
+
+            var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                if (line.Length < 3) continue;
+
+                // Porcelain v1 marks every unmerged path with one of these XY combinations -
+                // anything else (staged/unstaged M, A, D, ??, etc) is a normal, non-conflicted
+                // change and should be left alone here.
+                MergeConflictType? conflictType = (line[0], line[1]) switch
+                {
+                    ('U', 'U') => MergeConflictType.BothModified,
+                    ('A', 'A') => MergeConflictType.BothAdded,
+                    ('D', 'D') => MergeConflictType.BothDeleted,
+                    ('A', 'U') => MergeConflictType.AddedByUs,
+                    ('U', 'A') => MergeConflictType.AddedByThem,
+                    ('D', 'U') => MergeConflictType.DeletedByUs,
+                    ('U', 'D') => MergeConflictType.DeletedByThem,
+                    _ => null
+                };
+
+                if (conflictType == null) continue;
+
+                conflicts.Add(new MergeConflictFile
+                {
+                    Path = line.Substring(3).Trim().Trim('"'),
+                    ConflictType = conflictType.Value
+                });
+            }
+
+            return conflicts;
+        }
+
+        // A conflicted path has up to three index stages: 1=common ancestor, 2=ours, 3=theirs.
+        // Rather than show raw <<<<<<< conflict markers, extract each stage to a temp file and
+        // diff base->ours / base->theirs separately, so each side reads as an ordinary,
+        // familiar unified diff in the existing DiffViewerControl. A missing stage (e.g. the
+        // file was added on only one side) is treated as an empty base, which naturally shows
+        // up as "all additions" instead of failing.
+        public async Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var tempDir = Path.Combine(Path.GetTempPath(), $"girt_conflict_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                await WriteStageBlobOrEmptyAsync(repoPath, 1, cleanPath, Path.Combine(tempDir, "base")).ConfigureAwait(false);
+                await WriteStageBlobOrEmptyAsync(repoPath, 2, cleanPath, Path.Combine(tempDir, "ours")).ConfigureAwait(false);
+                await WriteStageBlobOrEmptyAsync(repoPath, 3, cleanPath, Path.Combine(tempDir, "theirs")).ConfigureAwait(false);
+
+                // Run from tempDir so git's a/... b/... diff headers read as short, clean
+                // "base"/"ours"/"theirs" labels instead of leaking the full temp file path.
+                var oursDiff = (await RunGitCommandAsync(tempDir, $"diff --no-index --unified={FullDiffContextLines} -- base ours").ConfigureAwait(false)).Output;
+                var theirsDiff = (await RunGitCommandAsync(tempDir, $"diff --no-index --unified={FullDiffContextLines} -- base theirs").ConfigureAwait(false)).Output;
+
+                return (oursDiff, theirsDiff);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, recursive: true); } catch { /* best effort cleanup */ }
+            }
+        }
+
+        private static async Task WriteStageBlobOrEmptyAsync(string repoPath, int stage, string cleanPath, string destPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show \":{stage}:{cleanPath}\"").ConfigureAwait(false);
+            await File.WriteAllTextAsync(destPath, success ? output : "", Encoding.UTF8).ConfigureAwait(false);
+        }
+
+        public async Task<(bool Success, string Output)> AbortMergeAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "merge --abort").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        // Commits with the pre-populated merge message once every conflict has been staged -
+        // the counterpart to AbortMergeAsync for finishing a conflicted merge in place.
+        public async Task<(bool Success, string Output)> ContinueMergeAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "commit --no-edit").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        // A `git pull --rebase` that conflicts leaves the repo mid-rebase, not mid-merge -
+        // `git merge --abort`/`commit --no-edit` don't apply there, hence these separate
+        // rebase-specific counterparts alongside AbortMergeAsync/ContinueMergeAsync.
+        public async Task<(bool Success, string Output)> AbortRebaseAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "rebase --abort").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        public async Task<(bool Success, string Output)> ContinueRebaseAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "rebase --continue").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        // --force-with-lease refuses to overwrite the remote branch if it has moved since our
+        // last fetch of it (someone else pushed) - unlike a plain --force, which overwrites
+        // unconditionally regardless of what's actually sitting on the remote.
+        public async Task<(bool Success, string Output)> ForcePushWithLeaseAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "push --force-with-lease").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
         public async Task<(bool Success, string Output)> ResetHeadAsync(string repoPath, string targetRef, GitResetMode mode)
         {
             var flag = mode switch
@@ -532,18 +654,40 @@ namespace Girt.Services
             return branches.OrderByDescending(b => b.IsCurrent).ThenBy(b => b.Name).ToList();
         }
 
+        private const string CommitLogFormat = "%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cr%x1f%D%x1f%s%x1f%b%x1e";
+
         public async Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000)
         {
-            var commits = new List<GitCommit>();
-            var format = "%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cr%x1f%D%x1f%s%x1f%b%x1e";
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"log --all --topo-order --format=format:\"{format}\" -n {maxCount}").ConfigureAwait(false);
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"log --all --topo-order --format=format:\"{CommitLogFormat}\" -n {maxCount}").ConfigureAwait(false);
 
             if (!success || string.IsNullOrWhiteSpace(output))
             {
-                return commits;
+                return new List<GitCommit>();
             }
 
             var currentHead = await GetCurrentBranchAsync(repoPath).ConfigureAwait(false);
+            return ParseCommitLogOutput(output, currentHead);
+        }
+
+        // Commits reachable from toRef but not fromRef - i.e. what a merge/rebase of toRef
+        // would actually bring in. Used by the merge preview dialog so the user sees what
+        // they're about to merge before it happens, not just a bare confirmation prompt.
+        public async Task<IReadOnlyList<GitCommit>> GetCommitsBetweenAsync(string repoPath, string fromRef, string toRef, int maxCount = 200)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"log --topo-order --format=format:\"{CommitLogFormat}\" -n {maxCount} \"{fromRef}..{toRef}\"").ConfigureAwait(false);
+
+            if (!success || string.IsNullOrWhiteSpace(output))
+            {
+                return new List<GitCommit>();
+            }
+
+            var currentHead = await GetCurrentBranchAsync(repoPath).ConfigureAwait(false);
+            return ParseCommitLogOutput(output, currentHead);
+        }
+
+        private static List<GitCommit> ParseCommitLogOutput(string output, string? currentHead)
+        {
+            var commits = new List<GitCommit>();
             var rawCommits = output.Split(RecordSeparator);
             var rowIndex = 0;
 
@@ -558,7 +702,7 @@ namespace Girt.Services
                 var parents = fields[1].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
                 var authorName = fields[2];
                 var authorEmail = fields[3];
-                
+
                 DateTimeOffset date = DateTimeOffset.UtcNow;
                 if (long.TryParse(fields[4].Trim(), out var unixSeconds))
                 {
@@ -596,10 +740,24 @@ namespace Girt.Services
             return success ? ParseNumstatOutput(output) : new List<GitFileDiff>();
         }
 
-        public async Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath)
+        // `git show <merge-commit> -- path` shows nothing for a merge commit - with two+
+        // parents, git can't pick which one to diff against without -m/-c, so a per-file
+        // targeted show just comes back empty (numstat/combined-diff summaries still work,
+        // which is why the changed-files list looks fine while the per-file diff doesn't).
+        // Callers that already know a commit is a merge should pass its first parent's hash as
+        // diffAgainstRef, which sidesteps the ambiguity the same way most git tools resolve it.
+        public async Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath, bool ignoreWhitespace = false, string? diffAgainstRef = null)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --unified={FullDiffContextLines} \"{commitHash}\" -- \"{cleanPath}\"").ConfigureAwait(false);
+            var wsFlag = ignoreWhitespace ? " -w" : "";
+
+            if (!string.IsNullOrEmpty(diffAgainstRef))
+            {
+                var (mergeSuccess, mergeOutput, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines}{wsFlag} {diffAgainstRef}..{commitHash} -- \"{cleanPath}\"").ConfigureAwait(false);
+                return mergeSuccess ? mergeOutput : "";
+            }
+
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show --unified={FullDiffContextLines}{wsFlag} \"{commitHash}\" -- \"{cleanPath}\"").ConfigureAwait(false);
             return success ? output : "";
         }
 
@@ -612,10 +770,11 @@ namespace Girt.Services
             return success ? ParseNumstatOutput(output) : new List<GitFileDiff>();
         }
 
-        public async Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath)
+        public async Task<string> GetRawUnpushedFileDiffAsync(string repoPath, string filePath, bool ignoreWhitespace = false)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines} @{{u}}..HEAD -- \"{cleanPath}\"").ConfigureAwait(false);
+            var wsFlag = ignoreWhitespace ? " -w" : "";
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"diff --unified={FullDiffContextLines}{wsFlag} @{{u}}..HEAD -- \"{cleanPath}\"").ConfigureAwait(false);
             return success ? output : "";
         }
 
@@ -772,11 +931,19 @@ namespace Girt.Services
         {
             try
             {
+                // Win32's CreateProcess (which Process.Start uses under the hood) doesn't accept
+                // a UNC path as the initial working directory - e.g. \\wsl.localhost\Ubuntu\...
+                // or \\wsl$\Ubuntu\... for a repo opened from WSL, or any network share. Setting
+                // ProcessStartInfo.WorkingDirectory to one either throws or silently launches git
+                // from Girt's own install directory instead, which looks exactly like "doesn't
+                // recognize this as a repo" (rev-parse runs against the wrong directory). git.exe
+                // itself DOES support UNC paths internally via `-C`, so route every command
+                // through that instead of the OS-level working directory, and start the process
+                // from a location that's always a normal local path.
                 var psi = new ProcessStartInfo
                 {
                     FileName = "git",
-                    Arguments = arguments,
-                    WorkingDirectory = workingDirectory,
+                    Arguments = $"-C \"{workingDirectory.Replace("\"", "\\\"")}\" {arguments}",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,

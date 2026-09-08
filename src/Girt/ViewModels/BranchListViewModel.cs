@@ -505,7 +505,31 @@ namespace Girt.ViewModels
         public async Task DeleteBranchAsync(GitBranch? branch)
         {
             branch ??= SelectedBranch;
-            if (branch == null || branch.IsCurrent || branch.IsRemote) return;
+            if (branch == null) return;
+
+            // The context menu already hides this item for the current/remote branch (see
+            // CanCheckout / IsCurrent visibility bindings), so this should be unreachable from
+            // the UI - but if it's ever hit anyway (e.g. a stale SelectedBranch fallback), say
+            // why instead of silently doing nothing, which is exactly the "delete isn't working"
+            // symptom this whole method used to have for every failure path.
+            if (branch.IsCurrent || branch.IsRemote)
+            {
+                MessageBox.Show(
+                    branch.IsCurrent
+                        ? $"Can't delete '{branch.Name}' - it's the currently checked-out branch."
+                        : $"'{branch.Name}' is a remote branch and can't be deleted this way.",
+                    "Delete Branch",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirmResult = MessageBox.Show(
+                $"Delete branch '{branch.Name}'?\n\nThis cannot be undone.",
+                "Delete Branch",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirmResult != MessageBoxResult.Yes) return;
 
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
@@ -513,10 +537,33 @@ namespace Girt.ViewModels
             _setBusy(true, $"Deleting branch '{branch.Name}'...");
             try
             {
-                var (success, _) = await _gitService.DeleteBranchAsync(repoPath, branch.Name, force: false);
+                var (success, output) = await _gitService.DeleteBranchAsync(repoPath, branch.Name, force: false);
                 if (success)
                 {
                     await LoadBranchesAsync();
+                    return;
+                }
+
+                // The overwhelmingly common failure here is git refusing a safe delete because
+                // the branch isn't fully merged - previously this failed completely silently
+                // (no dialog, no log entry, branch just stayed put), which looked exactly like
+                // "delete branch isn't working" with nothing to go on.
+                var forceResult = MessageBox.Show(
+                    $"Could not delete '{branch.Name}':\n{output}\n\nForce delete anyway? This discards any commits on '{branch.Name}' not merged elsewhere.",
+                    "Delete Branch Failed",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Error);
+                if (forceResult == MessageBoxResult.Yes)
+                {
+                    var (forceSuccess, forceOutput) = await _gitService.DeleteBranchAsync(repoPath, branch.Name, force: true);
+                    if (forceSuccess)
+                    {
+                        await LoadBranchesAsync();
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Force delete also failed:\n{forceOutput}", "Delete Branch Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 }
             }
             finally
