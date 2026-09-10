@@ -2114,6 +2114,21 @@
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>
+
+                            <!-- GetUnpushedDiffAsync is a real git round-trip (diffing every
+                                 unpushed commit) - without this the dialog opened empty and sat
+                                 there for a few seconds with no indication it was doing anything. -->
+                            <StackPanel Grid.Row="1"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding UnpushedChanges.IsLoadingFiles, Converter={StaticResource BoolToVisConverter}}">
+                                <TextBlock Text="Loading changes..."
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,0,0,8" />
+                                <ProgressBar IsIndeterminate="True" Width="160" Height="4" />
+                            </StackPanel>
                         </Grid>
 
                         <GridSplitter Grid.Column="1"

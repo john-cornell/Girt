@@ -37,8 +37,14 @@
     <!-- Diff Colors -->
     <SolidColorBrush x:Key="DiffAddedBgBrush" Color="#E6FFEC" />
     <SolidColorBrush x:Key="DiffAddedTextBrush" Color="#1A7F37" />
+    <!-- Muted/desaturated version of DiffAddedTextBrush for "// comment" lines within an added
+         hunk - keeps the green family (still reads as "added") without competing with added code. -->
+    <SolidColorBrush x:Key="DiffAddedCommentTextBrush" Color="#6B8F76" />
     <SolidColorBrush x:Key="DiffDeletedBgBrush" Color="#FFEBE9" />
     <SolidColorBrush x:Key="DiffDeletedTextBrush" Color="#CF222E" />
+    <!-- Muted/desaturated version of DiffDeletedTextBrush for "// comment" lines within a deleted
+         hunk - same idea as DiffAddedCommentTextBrush, in the red family. -->
+    <SolidColorBrush x:Key="DiffDeletedCommentTextBrush" Color="#A15D63" />
     <SolidColorBrush x:Key="DiffHeaderBgBrush" Color="#DDF4FF" />
     <SolidColorBrush x:Key="DiffHeaderTextBrush" Color="#0969DA" />
     <SolidColorBrush x:Key="DiffExpandedBgBrush" Color="#FFF8C5" />

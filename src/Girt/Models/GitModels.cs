@@ -236,6 +236,11 @@ namespace Girt.Models
 
         public bool CanToggleCollapse => Type == DiffLineType.CollapsedContext || CollapseGroupId.HasValue;
 
+        /// <summary>Whether this line is (only) a single-line "//" comment, so the diff viewer
+        /// can render it in a subtly muted variant of the line's Added/Deleted/unchanged color
+        /// instead of the full code color.</summary>
+        public bool IsCommentLine => Text.TrimStart().StartsWith("//");
+
         /// <summary>Selected for a line-level revert (see
         /// WorkingChangesViewModel.RevertSelectedLinesAsync / DiffParser.ReconstructFileContent)
         /// - only meaningful for Added/Deleted lines in an unstaged file's diff. Click-toggled

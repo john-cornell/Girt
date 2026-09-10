@@ -96,7 +96,7 @@
                                 <!-- Line Content -->
                                 <TextBlock Grid.Column="2"
                                            Text="{Binding Text}"
-                                           Foreground="{Binding Type, Converter={StaticResource DiffFgConverter}}"
+                                           Foreground="{Binding Converter={StaticResource DiffFgConverter}}"
                                            FontFamily="Consolas, Cascadia Code, monospace"
                                            FontSize="12"
                                            HorizontalAlignment="Left">

@@ -106,16 +106,22 @@ namespace Girt.Converters
     {
         public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
-            if (value is DiffLineType type)
+            if (value is DiffLine line)
             {
                 var app = Application.Current;
-                return type switch
+                return line.Type switch
                 {
-                    DiffLineType.Added => app.TryFindResource("DiffAddedTextBrush") ?? Brushes.DarkGreen,
-                    DiffLineType.Deleted => app.TryFindResource("DiffDeletedTextBrush") ?? Brushes.DarkRed,
+                    DiffLineType.Added => line.IsCommentLine
+                        ? app.TryFindResource("DiffAddedCommentTextBrush") ?? Brushes.DarkOliveGreen
+                        : app.TryFindResource("DiffAddedTextBrush") ?? Brushes.DarkGreen,
+                    DiffLineType.Deleted => line.IsCommentLine
+                        ? app.TryFindResource("DiffDeletedCommentTextBrush") ?? Brushes.IndianRed
+                        : app.TryFindResource("DiffDeletedTextBrush") ?? Brushes.DarkRed,
                     DiffLineType.Header => app.TryFindResource("DiffHeaderTextBrush") ?? Brushes.DarkBlue,
                     DiffLineType.CollapsedContext => app.TryFindResource("DiffHeaderTextBrush") ?? Brushes.DarkBlue,
-                    _ => app.TryFindResource("TextPrimaryBrush") ?? Brushes.Black
+                    _ => line.IsCommentLine
+                        ? app.TryFindResource("TextSecondaryBrush") ?? Brushes.Gray
+                        : app.TryFindResource("TextPrimaryBrush") ?? Brushes.Black
                 };
             }
             return Brushes.Black;

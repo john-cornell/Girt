@@ -251,6 +251,11 @@ namespace Girt.ViewModels
                 OnWorkingChangesUpdatedAsync,
                 _themeService.LoadPushAfterCommit(),
                 _themeService.SavePushAfterCommit,
+                (busy, message) =>
+                {
+                    IsLoading = busy;
+                    if (message != null) StatusMessage = message;
+                },
                 () => IgnoreWhitespaceInDiffs);
             Settings = new SettingsViewModel(
                 _gitService,

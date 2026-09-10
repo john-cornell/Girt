@@ -19,6 +19,7 @@ namespace Girt.ViewModels
         private readonly Func<bool, Task> _onRepositoryUpdated;
         private readonly Action<bool> _savePushAfterCommit;
         private readonly Func<bool> _getIgnoreWhitespace;
+        private readonly Action<bool, string?> _setBusy;
 
         [ObservableProperty]
         private GitWorkingFile? _selectedFile;
@@ -70,6 +71,7 @@ namespace Girt.ViewModels
             Func<bool, Task> onRepositoryUpdated,
             bool initialPushAfterCommit,
             Action<bool> savePushAfterCommit,
+            Action<bool, string?>? setBusy = null,
             Func<bool>? getIgnoreWhitespace = null)
         {
             _gitService = gitService;
@@ -78,6 +80,7 @@ namespace Girt.ViewModels
             _savePushAfterCommit = savePushAfterCommit;
             _pushAfterCommit = initialPushAfterCommit;
             _getIgnoreWhitespace = getIgnoreWhitespace ?? (() => false);
+            _setBusy = setBusy ?? ((_, _) => { });
 
             // TotalChangesCount/HasStagedFiles/HasUnstagedFiles are computed from these two
             // collections but raise no notification of their own - they used to only update
@@ -687,6 +690,13 @@ namespace Girt.ViewModels
             if (string.IsNullOrEmpty(repoPath)) return;
 
             IsLoading = true;
+            // Drives MainViewModel's existing busy overlay/status pill (see BranchListViewModel
+            // for the same pattern) - without this, Commit was the one long-running action in
+            // the app with no visible feedback at all while the git process ran. Left true
+            // through the optimistic refresh below, and through the push that may follow (see
+            // MainViewModel.OnWorkingChangesUpdatedAsync), so the indicator covers the whole
+            // commit(+push) sequence rather than flickering off between the two.
+            _setBusy(true, "Committing changes...");
             try
             {
                 var (success, output) = await _gitService.CommitAsync(repoPath, message);
@@ -711,6 +721,7 @@ namespace Girt.ViewModels
             finally
             {
                 IsLoading = false;
+                _setBusy(false, null);
             }
         }
     }
