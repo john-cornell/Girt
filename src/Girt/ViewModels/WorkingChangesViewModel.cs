@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
@@ -186,14 +187,19 @@ namespace Girt.ViewModels
         // Line-level revert only makes sense against the unstaged diff (working tree vs index) -
         // reverting a selected line there means "make the working tree match the index again for
         // just this line". A staged file's diff is index-vs-HEAD, where "revert" would mean
-        // something different (unstage just that line), which isn't implemented here.
-        public bool CanRevertSelectedLines => SelectedFile is { IsStaged: false } && DiffLines.Any(l => l.IsSelected);
+        // something different (unstage just that line), which isn't implemented here. Selection
+        // can include Context lines too (useful for copying a range), so this specifically
+        // requires a selected Added/Deleted line - selecting only unchanged context has nothing
+        // to revert.
+        private bool HasRevertableSelection => DiffLines.Any(l => l.IsSelected && l.Type is DiffLineType.Added or DiffLineType.Deleted);
+
+        public bool CanRevertSelectedLines => SelectedFile is { IsStaged: false } && HasRevertableSelection;
 
         [RelayCommand]
         public async Task RevertSelectedLinesAsync()
         {
             if (SelectedFile == null || SelectedFile.IsStaged) return;
-            if (!DiffLines.Any(l => l.IsSelected)) return;
+            if (!HasRevertableSelection) return;
 
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
@@ -229,6 +235,18 @@ namespace Girt.ViewModels
             }
         }
 
+        // git status reports at most one line per path per side (staged/unstaged), but Girt
+        // models a file that's partly staged and partly still dirty as two separate
+        // GitWorkingFile instances - one per side. Moving one of those instances into a list
+        // that already holds the other (e.g. staging the unstaged half of an "MM" file) would
+        // otherwise leave two rows for the same path. Collapse to one row, like GitExtensions.
+        private static GitWorkingFile? RemoveExistingEntry(ObservableCollection<GitWorkingFile> collection, GitWorkingFile file)
+        {
+            var existing = collection.FirstOrDefault(f => f.Path == file.Path);
+            if (existing != null) collection.Remove(existing);
+            return existing;
+        }
+
         [RelayCommand]
         public async Task StageFileAsync(GitWorkingFile? file)
         {
@@ -246,6 +264,7 @@ namespace Girt.ViewModels
             UnstagedFiles.Remove(file);
             file.IsStaged = true;
             if (file.Status == FileStatusType.Untracked) file.Status = FileStatusType.Added;
+            var displacedStaged = RemoveExistingEntry(StagedFiles, file);
             StagedFiles.Add(file);
 
             var (success, output) = await _gitService.StageFileAsync(repoPath, file.Path);
@@ -256,6 +275,7 @@ namespace Girt.ViewModels
             else
             {
                 StagedFiles.Remove(file);
+                if (displacedStaged != null) StagedFiles.Add(displacedStaged);
                 file.IsStaged = false;
                 file.Status = originalStatus;
                 UnstagedFiles.Add(file);
@@ -276,6 +296,7 @@ namespace Girt.ViewModels
             StagedFiles.Remove(file);
             file.IsStaged = false;
             if (file.Status == FileStatusType.Added) file.Status = FileStatusType.Untracked;
+            var displacedUnstaged = RemoveExistingEntry(UnstagedFiles, file);
             UnstagedFiles.Add(file);
 
             var (success, output) = await _gitService.UnstageFileAsync(repoPath, file.Path);
@@ -286,6 +307,7 @@ namespace Girt.ViewModels
             else
             {
                 UnstagedFiles.Remove(file);
+                if (displacedUnstaged != null) UnstagedFiles.Add(displacedUnstaged);
                 file.IsStaged = true;
                 file.Status = originalStatus;
                 StagedFiles.Add(file);
@@ -302,11 +324,13 @@ namespace Girt.ViewModels
 
             var moved = UnstagedFiles.ToList();
             var originalStatuses = moved.ToDictionary(f => f, f => f.Status);
+            var displacedStaged = new Dictionary<GitWorkingFile, GitWorkingFile?>();
             UnstagedFiles.Clear();
             foreach (var f in moved)
             {
                 f.IsStaged = true;
                 if (f.Status == FileStatusType.Untracked) f.Status = FileStatusType.Added;
+                displacedStaged[f] = RemoveExistingEntry(StagedFiles, f);
                 StagedFiles.Add(f);
             }
 
@@ -320,6 +344,7 @@ namespace Girt.ViewModels
                 foreach (var f in moved)
                 {
                     StagedFiles.Remove(f);
+                    if (displacedStaged[f] != null) StagedFiles.Add(displacedStaged[f]!);
                     f.IsStaged = false;
                     f.Status = originalStatuses[f];
                     UnstagedFiles.Add(f);
@@ -337,11 +362,13 @@ namespace Girt.ViewModels
 
             var moved = StagedFiles.ToList();
             var originalStatuses = moved.ToDictionary(f => f, f => f.Status);
+            var displacedUnstaged = new Dictionary<GitWorkingFile, GitWorkingFile?>();
             StagedFiles.Clear();
             foreach (var f in moved)
             {
                 f.IsStaged = false;
                 if (f.Status == FileStatusType.Added) f.Status = FileStatusType.Untracked;
+                displacedUnstaged[f] = RemoveExistingEntry(UnstagedFiles, f);
                 UnstagedFiles.Add(f);
             }
 
@@ -355,6 +382,7 @@ namespace Girt.ViewModels
                 foreach (var f in moved)
                 {
                     UnstagedFiles.Remove(f);
+                    if (displacedUnstaged[f] != null) UnstagedFiles.Add(displacedUnstaged[f]!);
                     f.IsStaged = true;
                     f.Status = originalStatuses[f];
                     StagedFiles.Add(f);
@@ -363,20 +391,26 @@ namespace Girt.ViewModels
             }
         }
 
+        // Overridable so tests can auto-confirm without popping a real MessageBox - see
+        // ConfirmStashAction for the same pattern, and AIREADME.md #13 for why this matters (a
+        // command hitting a real, non-injectable MessageBox.Show under the test host is a
+        // genuine hang risk, not just "slow").
+        public Func<string, bool> ConfirmDiscardAction { get; set; } =
+            message => MessageBox.Show(message, "Discard Changes", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
         [RelayCommand]
         public async Task DiscardChangesAsync(GitWorkingFile? file)
         {
             file ??= SelectedFile;
             if (file == null) return;
 
-            var result = MessageBox.Show(
-                $"Are you sure you want to discard changes in '{file.Path}'?\nThis cannot be undone.",
-                "Discard Changes",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
+            if (!ConfirmDiscardAction($"Are you sure you want to discard changes in '{file.Path}'?\nThis cannot be undone.")) return;
 
-            if (result != MessageBoxResult.Yes) return;
+            await DiscardChangesNoConfirmAsync(file);
+        }
 
+        private async Task DiscardChangesNoConfirmAsync(GitWorkingFile file)
+        {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
@@ -394,6 +428,43 @@ namespace Girt.ViewModels
             {
                 UnstagedFiles.Add(file);
                 MessageBox.Show($"Failed to discard changes: {error}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Multi-select bulk actions (see MainWindow.xaml.cs's ResolveSelectedWorkingFiles) -
+        // GitExtensions' own file list supports selecting several files and staging/discarding
+        // them together instead of one at a time.
+        [RelayCommand]
+        public async Task StageSelectedFilesAsync(List<GitWorkingFile>? files)
+        {
+            if (files == null || files.Count == 0) return;
+            foreach (var file in files)
+            {
+                await StageFileAsync(file);
+            }
+        }
+
+        [RelayCommand]
+        public async Task UnstageSelectedFilesAsync(List<GitWorkingFile>? files)
+        {
+            if (files == null || files.Count == 0) return;
+            foreach (var file in files)
+            {
+                await UnstageFileAsync(file);
+            }
+        }
+
+        [RelayCommand]
+        public async Task DiscardSelectedFilesAsync(List<GitWorkingFile>? files)
+        {
+            if (files == null || files.Count == 0) return;
+
+            // One confirmation for the whole batch, not one per file.
+            if (!ConfirmDiscardAction($"Are you sure you want to discard changes in {files.Count} file(s)?\nThis cannot be undone.")) return;
+
+            foreach (var file in files)
+            {
+                await DiscardChangesNoConfirmAsync(file);
             }
         }
 
@@ -464,8 +535,19 @@ namespace Girt.ViewModels
         {
             if (StagedFiles.Count == 0)
             {
-                MessageBox.Show("There are no staged changes to stash. Stage files first.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                if (UnstagedFiles.Count == 0)
+                {
+                    MessageBox.Show("There are no changes to stash.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                if (!ConfirmStageAllFirstAction("There are no staged changes to stash yet.\n\nStage all changes now and stash them?"))
+                {
+                    return;
+                }
+
+                await StageAllAsync();
+                if (StagedFiles.Count == 0) return; // Stage All failed - it already reported why.
             }
 
             var repoPath = _getRepoPath();
@@ -499,6 +581,12 @@ namespace Girt.ViewModels
         // code never sets this and gets the real Yes/No dialog.
         public Func<string, bool> ConfirmStashAction { get; set; } =
             message => MessageBox.Show(message, "Confirm", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
+        // Same pattern as ConfirmStashAction/ConfirmNothingToPushAction (MainViewModel) - shown
+        // by Commit/Stash Staged when there's nothing staged but there are unstaged changes to
+        // offer staging, instead of just telling the user to go stage things themselves first.
+        public Func<string, bool> ConfirmStageAllFirstAction { get; set; } =
+            message => MessageBox.Show(message, "No Staged Changes", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
 
         [RelayCommand]
         public async Task StashPopAsync()
@@ -580,8 +668,19 @@ namespace Girt.ViewModels
 
             if (StagedFiles.Count == 0)
             {
-                MessageBox.Show("There are no staged changes to commit. Stage files first.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                if (UnstagedFiles.Count == 0)
+                {
+                    MessageBox.Show("There are no changes to commit.", "No Staged Changes", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (!ConfirmStageAllFirstAction("There are no staged changes to commit yet.\n\nStage all changes now and commit them?"))
+                {
+                    return;
+                }
+
+                await StageAllAsync();
+                if (StagedFiles.Count == 0) return; // Stage All failed - it already reported why.
             }
 
             var repoPath = _getRepoPath();

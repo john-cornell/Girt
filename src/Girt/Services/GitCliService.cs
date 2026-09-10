@@ -304,6 +304,13 @@ namespace Girt.Services
             return (success, (output + "\n" + error).Trim());
         }
 
+        public async Task<(bool Success, string Output)> PushSetUpstreamAsync(string repoPath, string branchName)
+        {
+            var cleanBranch = branchName.Replace("\"", "\\\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"push --set-upstream origin \"{cleanBranch}\"").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
         public async Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false)
         {
             var args = rebase ? "pull --rebase" : "pull";
@@ -556,6 +563,49 @@ namespace Girt.Services
         {
             var (success, output, _) = await RunGitCommandAsync(repoPath, $"show \":{stage}:{cleanPath}\"").ConfigureAwait(false);
             await File.WriteAllTextAsync(destPath, success ? output : "", Encoding.UTF8).ConfigureAwait(false);
+        }
+
+        // Delegates to whatever the user has configured as `merge.tool` (kdiff3, meld,
+        // p4merge, vscode, ...) instead of Girt trying to know each tool's own CLI argument
+        // syntax - git already knows how to launch the configured tool with correct
+        // base/local/remote/merged file wiring for a real 3-way merge session, and writes the
+        // result straight back to the real working-tree file. `--no-prompt` skips the
+        // "Hit return to start merge resolution tool" console prompt, which a GUI app spawning
+        // this with no attached console has no way to answer. `--no-backup` stops git leaving a
+        // `<file>.orig` copy behind on success, regardless of the user's own
+        // mergetool.keepBackup setting - Girt's conflict dialog already lets you re-open the
+        // tool as many times as needed, so there's nothing a stray .orig file adds here.
+        public async Task<(bool Success, string Output)> LaunchMergeToolAsync(string repoPath, string filePath)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"mergetool --no-prompt --no-backup -- \"{cleanPath}\"").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        // One-click recovery for the single most common "why won't Open In Merge Tool work"
+        // case - kdiff3 being installed but merge.tool never having been set, so git has no
+        // idea to use it (installing kdiff3 alone doesn't register it with git, and a from-
+        // installer kdiff3 is frequently not on PATH either, which is why git's own PATH-based
+        // fallback lookup for it can still fail). Checks the two standard Windows install
+        // locations only - if the user has it somewhere custom, they can set
+        // mergetool.kdiff3.path themselves.
+        public async Task<(bool Success, string Output)> ConfigureKDiff3AsMergeToolAsync(string repoPath)
+        {
+            string[] candidatePaths =
+            {
+                @"C:\Program Files\KDiff3\kdiff3.exe",
+                @"C:\Program Files (x86)\KDiff3\kdiff3.exe"
+            };
+
+            var kdiff3Path = candidatePaths.FirstOrDefault(File.Exists);
+            if (kdiff3Path == null)
+            {
+                return (false, "kdiff3.exe was not found in the standard install locations (Program Files\\KDiff3). Install KDiff3, or configure a different tool yourself with 'git config --global merge.tool <name>'.");
+            }
+
+            await SetGitConfigValueAsync(repoPath, "merge.tool", "kdiff3", global: true).ConfigureAwait(false);
+            await SetGitConfigValueAsync(repoPath, "mergetool.kdiff3.path", kdiff3Path.Replace('\\', '/'), global: true).ConfigureAwait(false);
+            return (true, $"Configured merge.tool = kdiff3 ({kdiff3Path})");
         }
 
         public async Task<(bool Success, string Output)> AbortMergeAsync(string repoPath)

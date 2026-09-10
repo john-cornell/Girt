@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$IssPath,
     [Parameter(Mandatory)][string]$SignToolExe,
     [Parameter(Mandatory)][string]$SignCert,
-    [string]$PasswordFile
+    [string]$PasswordFile,
+    [string]$AppVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,9 +20,14 @@ else {
     $signDef = "`$q$st`$q sign /f `$q$pfx`$q /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `$f"
 }
 
+$versionDef = ""
+if ($AppVersion) {
+    $versionDef = "/DMyAppVersion=$AppVersion "
+}
+
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $IsccExe
-$psi.Arguments = "/DUSINGSIGNTOOL `"/SGirtSign=$signDef`" `"$iss`""
+$psi.Arguments = "/DUSINGSIGNTOOL $versionDef`"/SGirtSign=$signDef`" `"$iss`""
 $psi.UseShellExecute = $false
 
 $proc = [System.Diagnostics.Process]::Start($psi)

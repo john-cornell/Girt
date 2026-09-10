@@ -60,6 +60,8 @@
                                               Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
                                     <MenuItem Header="Show Whole File"
                                               Click="OnExpandAllDiffSectionsClicked" />
+                                    <Separator />
+                                    <MenuItem Header="Copy Line(s)" Click="OnCopyLinesClicked" />
                                     <Separator Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
                                     <MenuItem Header="Revert Selected Lines"
                                               Click="OnRevertSelectedLinesClicked"

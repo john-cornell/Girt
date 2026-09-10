@@ -46,41 +46,39 @@ namespace Girt.Controls
             (DataContext as IDiffLineHost)?.ExpandAllDiffSections();
         }
 
-        // Line-level revert selection only applies to WorkingChangesViewModel's unstaged diff
-        // (see WorkingChangesViewModel.RevertSelectedLinesAsync) - other DataContexts (commit
-        // history, unpushed review, merge-conflict Ours/Theirs previews) show read-only diffs
-        // with nothing to revert into, so clicks/drags there are simply ignored. A drag can
-        // start or pass over a Context/Header/CollapsedContext row without issue - only
-        // Added/Deleted rows within the swept range ever actually get selected (see
-        // ApplyRangeSelection), everything else is just ignored as the user drags over it.
+        // Selection (click/drag/shift-click) works against any diff view - copying lines is
+        // useful everywhere (commit history, unpushed review, merge-conflict Ours/Theirs), not
+        // just the unstaged diff. Only the *revert* action itself stays gated to
+        // WorkingChangesViewModel (see OnRevertSelectedLinesClicked) - reverting into a
+        // read-only historical diff makes no sense, but selecting/copying its lines does.
         private void OnDiffLineMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             if (sender is not Border { DataContext: DiffLine line } border) return;
-            if (DataContext is not WorkingChangesViewModel vm) return;
+            if (DataContext is not IDiffLineHost host) return;
 
             var modifiers = Keyboard.Modifiers;
 
             if (modifiers.HasFlag(ModifierKeys.Shift) && _lastAnchorLine != null)
             {
                 // One-shot range from the last anchor - not a drag, so no mouse capture.
-                ApplyRangeSelection(vm.DiffLines, _lastAnchorLine, line, new HashSet<DiffLine>());
+                ApplyRangeSelection(host.DiffLines, _lastAnchorLine, line, new HashSet<DiffLine>());
                 e.Handled = true;
                 return;
             }
 
             _dragBaselineSelected = modifiers.HasFlag(ModifierKeys.Control)
-                ? vm.DiffLines.Where(l => l.IsSelected).ToHashSet()
+                ? host.DiffLines.Where(l => l.IsSelected).ToHashSet()
                 : new HashSet<DiffLine>();
 
             if (!modifiers.HasFlag(ModifierKeys.Control))
             {
-                foreach (var l in vm.DiffLines) l.IsSelected = false;
+                foreach (var l in host.DiffLines) l.IsSelected = false;
             }
 
             _dragAnchorLine = line;
             _lastAnchorLine = line;
             _isDragging = true;
-            ApplyRangeSelection(vm.DiffLines, line, line, _dragBaselineSelected);
+            ApplyRangeSelection(host.DiffLines, line, line, _dragBaselineSelected);
 
             border.CaptureMouse();
             e.Handled = true;
@@ -96,7 +94,7 @@ namespace Girt.Controls
                 return;
             }
 
-            if (DataContext is not WorkingChangesViewModel vm) return;
+            if (DataContext is not IDiffLineHost host) return;
 
             // The mouse is captured on the row where the drag started, so `sender`'s own
             // DataContext never changes during the drag - hit-test against the whole
@@ -104,7 +102,7 @@ namespace Girt.Controls
             var hitLine = FindDiffLineUnderCursor(e);
             if (hitLine == null) return;
 
-            ApplyRangeSelection(vm.DiffLines, _dragAnchorLine, hitLine, _dragBaselineSelected);
+            ApplyRangeSelection(host.DiffLines, _dragAnchorLine, hitLine, _dragBaselineSelected);
         }
 
         private void OnDiffLineMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -132,9 +130,12 @@ namespace Girt.Controls
         }
 
         // Sets IsSelected for every line to (already selected before this drag) OR (within the
-        // [anchor,current] range AND actually revertable) - re-evaluated on every call so
+        // [anchor,current] range AND actually selectable) - re-evaluated on every call so
         // dragging back and forth during a single gesture correctly adds and removes lines from
         // just this drag's own tentative range without touching a separate prior selection.
+        // Context lines are selectable (copying a range often wants the unchanged lines around
+        // an edit too) - only Header/CollapsedContext rows, which carry no real file content,
+        // are excluded.
         private static void ApplyRangeSelection(IList<DiffLine> diffLines, DiffLine anchor, DiffLine current, HashSet<DiffLine> baseline)
         {
             var anchorIndex = diffLines.IndexOf(anchor);
@@ -146,7 +147,7 @@ namespace Girt.Controls
             for (var i = 0; i < diffLines.Count; i++)
             {
                 var line = diffLines[i];
-                var inDragRange = i >= start && i <= end && (line.Type == DiffLineType.Added || line.Type == DiffLineType.Deleted);
+                var inDragRange = i >= start && i <= end && line.Type is DiffLineType.Added or DiffLineType.Deleted or DiffLineType.Context;
                 line.IsSelected = baseline.Contains(line) || inDragRange;
             }
         }
@@ -156,6 +157,28 @@ namespace Girt.Controls
             if (DataContext is WorkingChangesViewModel { CanRevertSelectedLines: true } vm)
             {
                 vm.RevertSelectedLinesCommand.Execute(null);
+            }
+        }
+
+        // Copies the current selection if there is one, otherwise just the line that was
+        // right-clicked - matches the common "act on the line under the cursor when nothing's
+        // selected" convention. Strips each line's leading +/-/space diff marker so what lands
+        // on the clipboard is the actual code, not diff syntax.
+        private void OnCopyLinesClicked(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is not IDiffLineHost host) return;
+            if (sender is not MenuItem { DataContext: DiffLine clickedLine }) return;
+
+            var selected = host.DiffLines.Where(l => l.IsSelected).ToList();
+            var linesToCopy = selected.Count > 0 ? selected : new List<DiffLine> { clickedLine };
+
+            var text = string.Join(Environment.NewLine, linesToCopy
+                .Where(l => l.Type is DiffLineType.Added or DiffLineType.Deleted or DiffLineType.Context)
+                .Select(l => l.Text.Length > 0 ? l.Text.Substring(1) : l.Text));
+
+            if (!string.IsNullOrEmpty(text))
+            {
+                Clipboard.SetText(text);
             }
         }
     }

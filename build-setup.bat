@@ -11,6 +11,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem Read the version straight off the just-published Girt.dll (set by <Version> in Girt.csproj)
+rem so the installer's AppVersion can't drift from what the app itself reports at runtime -
+rem Girt.iss used to hardcode its own copy of the version and silently went stale.
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "[System.Diagnostics.FileVersionInfo]::GetVersionInfo('%~dp0src\Girt\bin\Release\net8.0-windows\publish\Girt.dll').ProductVersion"`) do set "APP_VERSION=%%v"
+rem ProductVersion can carry a SourceLink "+<git-hash>" suffix - Inno Setup's AppVersion should
+rem just be the plain three-part version, so drop anything from the first "+" onward.
+for /f "delims=+" %%v in ("!APP_VERSION!") do set "APP_VERSION=%%v"
+if not defined APP_VERSION (
+    echo WARNING: Could not read version from Girt.dll - installer will fall back to Girt.iss's default.
+) else (
+    echo Installer version: !APP_VERSION!
+)
+
 if not exist "%SIGN_CERT%" (
     echo.
     echo ----------------------------------------------------------------------
@@ -63,9 +76,9 @@ if errorlevel 1 (
 echo.
 echo === Compiling Installer ===
 if defined PW_TMP (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\run-iscc-with-sign.ps1" -IsccExe "%ISCC_EXE%" -IssPath "%~dp0installer\Girt.iss" -SignToolExe "%SIGNTOOL_EXE%" -SignCert "%SIGN_CERT%" -PasswordFile "!PW_TMP!"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\run-iscc-with-sign.ps1" -IsccExe "%ISCC_EXE%" -IssPath "%~dp0installer\Girt.iss" -SignToolExe "%SIGNTOOL_EXE%" -SignCert "%SIGN_CERT%" -PasswordFile "!PW_TMP!" -AppVersion "!APP_VERSION!"
 ) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\run-iscc-with-sign.ps1" -IsccExe "%ISCC_EXE%" -IssPath "%~dp0installer\Girt.iss" -SignToolExe "%SIGNTOOL_EXE%" -SignCert "%SIGN_CERT%"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\run-iscc-with-sign.ps1" -IsccExe "%ISCC_EXE%" -IssPath "%~dp0installer\Girt.iss" -SignToolExe "%SIGNTOOL_EXE%" -SignCert "%SIGN_CERT%" -AppVersion "!APP_VERSION!"
 )
 if errorlevel 1 (
     echo.

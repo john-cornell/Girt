@@ -158,6 +158,14 @@ namespace Girt.Tests
             PushCalled = true;
             return Task.FromResult((NextPushSucceeds, NextPushOutput));
         }
+        public bool PushSetUpstreamCalled { get; set; }
+        public string? LastPushSetUpstreamBranch { get; set; }
+        public Task<(bool Success, string Output)> PushSetUpstreamAsync(string repoPath, string branchName)
+        {
+            PushSetUpstreamCalled = true;
+            LastPushSetUpstreamBranch = branchName;
+            return Task.FromResult((NextPushSucceeds, NextPushOutput));
+        }
         public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult(NextPullSucceeds ? (true, "Pulled") : (false, "Pull failed"));
         public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
@@ -260,6 +268,28 @@ namespace Girt.Tests
 
         public Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath) =>
             Task.FromResult((ConflictOursDiff, ConflictTheirsDiff));
+
+        public string? LastMergeToolFilePath { get; set; }
+        public bool NextMergeToolSucceeds { get; set; } = true;
+        public string NextMergeToolOutput { get; set; } = "No merge tool configured";
+        public Task<(bool Success, string Output)> LaunchMergeToolAsync(string repoPath, string filePath)
+        {
+            LastMergeToolFilePath = filePath;
+            return Task.FromResult((NextMergeToolSucceeds, NextMergeToolSucceeds ? "Merge tool exited" : NextMergeToolOutput));
+        }
+
+        public bool ConfigureKDiff3Called { get; set; }
+        public bool NextConfigureKDiff3Succeeds { get; set; } = true;
+        public Task<(bool Success, string Output)> ConfigureKDiff3AsMergeToolAsync(string repoPath)
+        {
+            ConfigureKDiff3Called = true;
+            if (NextConfigureKDiff3Succeeds)
+            {
+                // Simulates the retry succeeding now that merge.tool is actually configured.
+                NextMergeToolSucceeds = true;
+            }
+            return Task.FromResult((NextConfigureKDiff3Succeeds, NextConfigureKDiff3Succeeds ? "Configured merge.tool = kdiff3" : "kdiff3.exe not found"));
+        }
 
         public Task<(bool Success, string Output)> AbortMergeAsync(string repoPath)
         {
@@ -996,6 +1026,133 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task WorkingChangesViewModel_StageSelectedFiles_StagesEveryGivenFile()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "b.cs" });
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "c.cs" });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            await vm.LoadChangesAsync();
+
+            var toStage = vm.UnstagedFiles.Where(f => f.Path != "c.cs").ToList();
+            await vm.StageSelectedFilesCommand.ExecuteAsync(toStage);
+
+            Assert.Equal(2, vm.StagedFiles.Count);
+            Assert.Single(vm.UnstagedFiles);
+            Assert.Equal("c.cs", vm.UnstagedFiles[0].Path);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_UnstageSelectedFiles_UnstagesEveryGivenFile()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "a.cs", IsStaged = true });
+            fakeGit.Changes.StagedFiles.Add(new GitWorkingFile { Path = "b.cs", IsStaged = true });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            await vm.LoadChangesAsync();
+
+            await vm.UnstageSelectedFilesCommand.ExecuteAsync(vm.StagedFiles.ToList());
+
+            Assert.Empty(vm.StagedFiles);
+            Assert.Equal(2, vm.UnstagedFiles.Count);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_DiscardSelectedFiles_ConfirmsOnceThenDiscardsAll()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "b.cs" });
+
+            var confirmCallCount = 0;
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { })
+            {
+                ConfirmDiscardAction = _ => { confirmCallCount++; return true; }
+            };
+            await vm.LoadChangesAsync();
+
+            await vm.DiscardSelectedFilesCommand.ExecuteAsync(vm.UnstagedFiles.ToList());
+
+            Assert.Equal(1, confirmCallCount);
+            Assert.Empty(vm.UnstagedFiles);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_DiscardSelectedFiles_ConfirmNo_DiscardsNothing()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "a.cs" });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { })
+            {
+                ConfirmDiscardAction = _ => false
+            };
+            await vm.LoadChangesAsync();
+
+            await vm.DiscardSelectedFilesCommand.ExecuteAsync(vm.UnstagedFiles.ToList());
+
+            Assert.Single(vm.UnstagedFiles);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_Commit_NoStagedFiles_ConfirmYes_StagesAllThenCommits()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = false });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            vm.ConfirmStageAllFirstAction = _ => true;
+            await vm.LoadChangesAsync();
+            Assert.Empty(vm.StagedFiles);
+
+            vm.CommitSubject = "Add app file";
+            await vm.CommitAsync();
+
+            Assert.Equal("Add app file", fakeGit.LastCommitMessage);
+            Assert.Empty(vm.StagedFiles);
+            Assert.Empty(vm.UnstagedFiles);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_Commit_NoStagedFiles_ConfirmNo_DoesNotStageOrCommit()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = false });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            vm.ConfirmStageAllFirstAction = _ => false;
+            await vm.LoadChangesAsync();
+
+            vm.CommitSubject = "Add app file";
+            await vm.CommitAsync();
+
+            Assert.Null(fakeGit.LastCommitMessage);
+            Assert.Empty(vm.StagedFiles);
+            Assert.Single(vm.UnstagedFiles);
+        }
+
+        [Fact]
+        public async Task WorkingChangesViewModel_StashStaged_NoStagedFiles_ConfirmYes_StagesAllThenStashes()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Changes.UnstagedFiles.Add(new GitWorkingFile { Path = "app.cs", IsStaged = false });
+
+            var vm = new WorkingChangesViewModel(fakeGit, () => @"C:\FakeRepo", _ => Task.CompletedTask, false, _ => { });
+            vm.ConfirmStageAllFirstAction = _ => true;
+            await vm.LoadChangesAsync();
+            Assert.Empty(vm.StagedFiles);
+
+            await vm.StashStagedAsync();
+
+            Assert.Equal(1, vm.StashCount);
+            Assert.Empty(vm.StagedFiles);
+            Assert.Empty(vm.UnstagedFiles);
+        }
+
+        [Fact]
         public void WorkingChangesViewModel_PushAfterCommit_LoadsInitialValueAndPersistsChanges()
         {
             var fakeGit = new FakeGitService();
@@ -1315,6 +1472,52 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task MainViewModel_PushRejected_NoUpstream_OpensPublishBranchDialogInsteadOfPlainError()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: The current branch feature-x has no upstream branch.\n" +
+                                 "To push the current branch and set the remote as upstream, use\n\n" +
+                                 "    git push --set-upstream origin feature-x"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "feature-x"
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.True(mainVm.IsPushNoUpstreamDialogOpen);
+            Assert.False(mainVm.IsPushRejectedDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_ConfirmPushSetUpstream_PublishesCurrentBranchToOrigin()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: The current branch feature-x has no upstream branch."
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "feature-x"
+            };
+            await mainVm.PushCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsPushNoUpstreamDialogOpen);
+
+            fakeGit.NextPushSucceeds = true;
+            await mainVm.ConfirmPushSetUpstreamCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushSetUpstreamCalled);
+            Assert.Equal("feature-x", fakeGit.LastPushSetUpstreamBranch);
+            Assert.False(mainVm.IsPushNoUpstreamDialogOpen);
+        }
+
+        [Fact]
         public async Task MainViewModel_PushRejected_PullMerge_AutoRetriesPushOnceClean()
         {
             var fakeGit = new FakeGitService
@@ -1513,6 +1716,53 @@ index 1234567..89abcdef 100644
         }
 
         [Fact]
+        public async Task WorkingChangesViewModel_SelectingOnlyContextLines_DoesNotEnableRevert()
+        {
+            // Selection now covers Context lines too (useful for copying a range that includes
+            // unchanged lines), so CanRevertSelectedLines must specifically require a selected
+            // Added/Deleted line - selecting only unchanged context has nothing to revert, even
+            // though DiffLines.Any(l => l.IsSelected) would still be true.
+            var fakeGit = new FakeGitService
+            {
+                RawDiff = @"diff --git a/test.txt b/test.txt
+index 1234567..89abcdef 100644
+--- a/test.txt
++++ b/test.txt
+@@ -1,3 +1,4 @@
+ line 1
+-line 2
++line 2 modified
++line 2.5 new
+ line 3"
+            };
+
+            var tempDir = Path.Combine(Path.GetTempPath(), $"GirtRevertTest_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                await File.WriteAllTextAsync(Path.Combine(tempDir, "test.txt"), "line 1\nline 2 modified\nline 2.5 new\nline 3");
+
+                var vm = new WorkingChangesViewModel(fakeGit, () => tempDir, _ => Task.CompletedTask, false, _ => { });
+                var file = new GitWorkingFile { Path = "test.txt", IsStaged = false, Status = FileStatusType.Modified };
+
+                vm.SelectedFile = file;
+                await Task.Delay(50);
+
+                vm.DiffLines.Single(l => l.Type == DiffLineType.Context && l.Text == " line 1").IsSelected = true;
+
+                Assert.False(vm.CanRevertSelectedLines);
+
+                await vm.RevertSelectedLinesCommand.ExecuteAsync(null);
+
+                Assert.Null(fakeGit.LastWrittenFilePath);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+
+        [Fact]
         public async Task WorkingChangesViewModel_RevertSelectedLines_DoesNothingForStagedFiles()
         {
             // A staged file's diff is index-vs-HEAD, not working-tree-vs-index - "revert" there
@@ -1647,6 +1897,134 @@ index 1234567..89abcdef 100644
             Assert.True(mainVm.IsMergeConflictDialogOpen);
             Assert.Equal(2, mainVm.MergeConflictFiles.Count);
             Assert.False(mainVm.CanContinueMerge);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OpenConflictFileInEditor_LaunchesConfiguredMergeToolNotShellOpen()
+        {
+            // Regression: this used to Process.Start(UseShellExecute:true) the bare conflicted
+            // file, which either hit Explorer's "Open with..." picker (no file association) or
+            // launched a tool with just one file, showing an empty setup dialog instead of a
+            // real base/ours/theirs merge session. Must go through `git mergetool` instead, so
+            // whatever the user has configured as merge.tool gets the correct file wiring.
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                NextMergeToolSucceeds = true,
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            await mainVm.OpenConflictFileInEditorCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+
+            Assert.Equal("a.cs", fakeGit.LastMergeToolFilePath);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OpenConflictFileInEditor_NotConfigured_ConfirmYes_ConfiguresKDiff3AndRetries()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                NextMergeToolSucceeds = false,
+                NextMergeToolOutput = "This message is displayed because 'merge.tool' is not configured.",
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                ConfirmConfigureKDiff3Action = _ => true
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            await mainVm.OpenConflictFileInEditorCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+
+            Assert.True(fakeGit.ConfigureKDiff3Called);
+            // The fake simulates configuring having fixed it - the command should have retried
+            // and this time reached the merge tool successfully.
+            Assert.Equal("a.cs", fakeGit.LastMergeToolFilePath);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OpenConflictFileInEditor_NotConfigured_ConfirmNo_DoesNotConfigure()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                NextMergeToolSucceeds = false,
+                NextMergeToolOutput = "This message is displayed because 'merge.tool' is not configured.",
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                ConfirmConfigureKDiff3Action = _ => false
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            await mainVm.OpenConflictFileInEditorCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+
+            Assert.False(fakeGit.ConfigureKDiff3Called);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OpenConflictFileInEditor_OtherFailure_DoesNotOfferToConfigureKDiff3()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                NextMergeToolSucceeds = false,
+                NextMergeToolOutput = "fatal: git-mergetool--lib not found",
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                // Would confirm if asked - proves the gate is the specific "not configured"
+                // message, not just any failure.
+                ConfirmConfigureKDiff3Action = _ => true
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            await mainVm.OpenConflictFileInEditorCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+
+            Assert.False(fakeGit.ConfigureKDiff3Called);
+        }
+
+        [Fact]
+        public async Task MainViewModel_CloseMergeConflictDialog_AlwaysClosesRegardlessOfGitState()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsMergeConflictDialogOpen);
+
+            // Simulates the merge having been resolved/aborted outside Girt - Abort/Continue
+            // would now fail against a merge that no longer exists, but Close must still work.
+            mainVm.CloseMergeConflictDialogCommand.Execute(null);
+
+            Assert.False(mainVm.IsMergeConflictDialogOpen);
         }
 
         [Fact]

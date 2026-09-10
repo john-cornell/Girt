@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -28,7 +27,13 @@ namespace Girt.ViewModels
         private readonly RecentRepositoriesService _recentReposService;
         private readonly ThemeService _themeService;
 
-        public const string AppVersion = "0.4.45";
+        // Reads the version straight from the assembly (set by <Version> in Girt.csproj) instead
+        // of a separately hardcoded string here - a third copy that silently went stale (window
+        // title kept reporting 0.4.46 for several releases after the csproj had moved on).
+        public static readonly string AppVersion =
+            System.Reflection.Assembly.GetExecutingAssembly().GetName().Version is { } v
+                ? $"{v.Major}.{v.Minor}.{v.Build}"
+                : "0.0.0";
 
         [ObservableProperty]
         private string _repositoryPath = string.Empty;
@@ -196,6 +201,12 @@ namespace Girt.ViewModels
         // remote repository" recovery prompt instead of just dumping the raw git error.
         [ObservableProperty]
         private bool _isPushRejectedDialogOpen;
+
+        // No-Upstream Dialog State - shown when a push fails because the current branch has
+        // never been pushed before and has nothing to push to, mirroring Git Extensions'
+        // "Publish branch" prompt instead of just dumping the raw git error.
+        [ObservableProperty]
+        private bool _isPushNoUpstreamDialogOpen;
 
         public BranchListViewModel BranchList { get; }
         public CommitHistoryViewModel CommitHistory { get; }
@@ -669,6 +680,11 @@ namespace Girt.ViewModels
                     IsPushRejectedDialogOpen = true;
                     StatusMessage = "Push rejected - the remote has commits you don't have locally.";
                 }
+                else if (IsNoUpstreamRejection(output))
+                {
+                    IsPushNoUpstreamDialogOpen = true;
+                    StatusMessage = "This branch doesn't exist on the remote yet.";
+                }
                 else
                 {
                     MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -683,8 +699,41 @@ namespace Girt.ViewModels
         private static bool IsNonFastForwardRejection(string output) =>
             output.Contains("[rejected]") && (output.Contains("fetch first") || output.Contains("non-fast-forward"));
 
+        private static bool IsNoUpstreamRejection(string output) =>
+            output.Contains("has no upstream branch");
+
         [RelayCommand]
         public void CancelPushRejectedDialog() => IsPushRejectedDialogOpen = false;
+
+        [RelayCommand]
+        public void CancelPushNoUpstreamDialog() => IsPushNoUpstreamDialogOpen = false;
+
+        [RelayCommand]
+        public async Task ConfirmPushSetUpstreamAsync()
+        {
+            IsPushNoUpstreamDialogOpen = false;
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            IsLoading = true;
+            StatusMessage = $"Publishing branch '{CurrentBranch}' to origin...";
+            try
+            {
+                var (success, output) = await _gitService.PushSetUpstreamAsync(RepositoryPath, CurrentBranch);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = "Push successful!";
+                }
+                else
+                {
+                    MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
 
         [RelayCommand]
         public async Task ConfirmPushRejectedPullMergeAsync()
@@ -1217,20 +1266,58 @@ namespace Girt.ViewModels
             TheirsDiff.SetDiff(theirsDiff);
         }
 
+        // Overridable so tests can auto-confirm without popping a real MessageBox - see
+        // WorkingChangesViewModel.ConfirmStashAction for the same pattern.
+        public Func<string, bool> ConfirmConfigureKDiff3Action { get; set; } =
+            message => MessageBox.Show(message, "No Merge Tool Configured", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+
         [RelayCommand]
-        public void OpenConflictFileInEditor(MergeConflictFile? file)
+        public async Task OpenConflictFileInEditorAsync(MergeConflictFile? file)
         {
             if (file == null || string.IsNullOrEmpty(RepositoryPath)) return;
 
-            try
+            var (success, output) = await _gitService.LaunchMergeToolAsync(RepositoryPath, file.Path);
+
+            // The single most common reason this fails at all: nothing is configured as
+            // merge.tool - installing a tool like kdiff3 doesn't register it with git on its
+            // own. Offer the one tool most people on Windows already have (or is what
+            // GitExtensions itself is commonly pointed at) instead of just failing.
+            if (!success && output.Contains("'merge.tool' is not configured") &&
+                ConfirmConfigureKDiff3Action("No merge tool is configured yet.\n\nConfigure kdiff3 as your merge tool and try again?"))
             {
-                Process.Start(new ProcessStartInfo(Path.Combine(RepositoryPath, file.Path)) { UseShellExecute = true });
+                var (configured, configureOutput) = await _gitService.ConfigureKDiff3AsMergeToolAsync(RepositoryPath);
+                if (!configured)
+                {
+                    MessageBox.Show(configureOutput, "Configure Merge Tool", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                (success, output) = await _gitService.LaunchMergeToolAsync(RepositoryPath, file.Path);
             }
-            catch (Exception ex)
+
+            if (!success)
             {
-                MessageBox.Show($"Could not open '{file.Path}':\n{ex.Message}", "Open File", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    $"Could not launch your merge tool for '{file.Path}':\n{output}\n\nMake sure a merge tool is configured (git config merge.tool).",
+                    "Open In Merge Tool", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // The tool blocks until closed and may have resolved the conflict (or not) -
+            // refresh the Ours/Theirs preview so it reflects whatever's on disk now instead of
+            // showing the stale pre-merge-tool diff.
+            if (SelectedConflictFile == file)
+            {
+                await LoadConflictDiffsAsync(file);
             }
         }
+
+        // Always available regardless of git state - the merge/rebase this dialog was tracking
+        // may have already been finished or aborted outside Girt (another tool, another
+        // terminal), in which case Abort/Continue would just fail against a merge that no
+        // longer exists and leave the dialog stuck with no way out.
+        [RelayCommand]
+        public void CloseMergeConflictDialog() => IsMergeConflictDialogOpen = false;
 
         [RelayCommand]
         public async Task MarkConflictFileResolvedAsync(MergeConflictFile? file)

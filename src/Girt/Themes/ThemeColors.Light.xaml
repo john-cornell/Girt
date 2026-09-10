@@ -18,6 +18,9 @@
     <SolidColorBrush x:Key="TextSecondaryBrush" Color="#656D76" />
     <SolidColorBrush x:Key="TextMutedBrush" Color="#8C959F" />
     <SolidColorBrush x:Key="TextAccentBrush" Color="#0969DA" />
+    <!-- Guaranteed-contrast text color for a row/item while selected - see the dark theme's
+         copy of this key for why it's kept separate from TextPrimaryBrush. -->
+    <SolidColorBrush x:Key="SelectedTextBrush" Color="#0D1117" />
 
     <!-- Borders -->
     <SolidColorBrush x:Key="BorderBrush" Color="#D0D7DE" />

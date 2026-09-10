@@ -33,6 +33,7 @@ namespace Girt.Services
         Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false);
         Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
+        Task<(bool Success, string Output)> PushSetUpstreamAsync(string repoPath, string branchName);
         Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false);
         Task<(bool Success, string Output)> FetchAllAsync(string repoPath);
         Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2);
@@ -55,6 +56,8 @@ namespace Girt.Services
         Task<IReadOnlyList<GitFileDiff>> GetDiffStatBetweenAsync(string repoPath, string fromRef, string toRef);
         Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath);
         Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath);
+        Task<(bool Success, string Output)> LaunchMergeToolAsync(string repoPath, string filePath);
+        Task<(bool Success, string Output)> ConfigureKDiff3AsMergeToolAsync(string repoPath);
         Task<(bool Success, string Output)> AbortMergeAsync(string repoPath);
         Task<(bool Success, string Output)> ContinueMergeAsync(string repoPath);
         Task<(bool Success, string Output)> AbortRebaseAsync(string repoPath);

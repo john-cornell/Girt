@@ -93,9 +93,7 @@
                               ItemsSource="{Binding RecentRepositories}"
                               SelectedItem="{Binding RepositoryPath, Mode=OneWay}"
                               SelectionChanged="OnRecentRepoSelected"
-                              Background="{DynamicResource InputBackgroundBrush}"
-                              Foreground="{DynamicResource TextPrimaryBrush}"
-                              BorderBrush="{DynamicResource BorderBrush}"
+                              Style="{StaticResource ModernComboBoxStyle}"
                               VerticalAlignment="Center"
                               ToolTip="Recent repositories" />
                 </StackPanel>
@@ -531,15 +529,9 @@
                                                                   CommandParameter="{Binding}" />
                                                         <Separator />
                                                         <MenuItem Header="🔀 Merge into current branch...">
-                                                            <MenuItem Header="Merge (Default)"
-                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
-                                                            <MenuItem Header="Squash and Merge..."
-                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
-                                                            <MenuItem Header="Merge (--no-ff)..."
-                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Merge (Default)" Click="OnMergeDefaultClicked" />
+                                                            <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
+                                                            <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
                                                         <MenuItem Header="⎇ Rebase current branch on this branch..."
                                                                   Command="{Binding DataContext.RebaseCurrentBranchOnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -573,9 +565,19 @@
 
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding Name}"
-                                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center" />
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
 
                                                 <!-- Checkout Quick Action Button -->
                                                 <Button Grid.Column="2"
@@ -636,15 +638,9 @@
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
                                                         <MenuItem Header="🔀 Merge into current branch..."
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
-                                                            <MenuItem Header="Merge (Default)"
-                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
-                                                            <MenuItem Header="Squash and Merge..."
-                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
-                                                            <MenuItem Header="Merge (--no-ff)..."
-                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Merge (Default)" Click="OnMergeDefaultClicked" />
+                                                            <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
+                                                            <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
                                                         <MenuItem Header="📋 Copy Branch Name"
                                                                   Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -665,7 +661,18 @@
                                                             MouseLeftButtonDown="OnBranchFolderRowMouseDown"
                                                             Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
                                                     <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
-                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
                                                 </StackPanel>
 
                                                 <!-- Active-head / pinned indicator (leaf branches only). FallbackValue matters here:
@@ -687,10 +694,20 @@
 
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding DisplayName}"
-                                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis"
                                                            VerticalAlignment="Center"
-                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
 
                                                 <!-- Checkout Quick Action Button (leaf branches only, and not the one already
                                                      checked out - CanCheckout covers both, unlike the plain IsFolder check this
@@ -790,15 +807,9 @@
                                                                   CommandParameter="{Binding}" />
                                                         <Separator />
                                                         <MenuItem Header="🔀 Merge into current branch...">
-                                                            <MenuItem Header="Merge (Default)"
-                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
-                                                            <MenuItem Header="Squash and Merge..."
-                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
-                                                            <MenuItem Header="Merge (--no-ff)..."
-                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Merge (Default)" Click="OnMergeDefaultClicked" />
+                                                            <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
+                                                            <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
                                                         <MenuItem Header="⎇ Rebase current branch on this branch..."
                                                                   Command="{Binding DataContext.RebaseCurrentBranchOnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -819,9 +830,19 @@
                                                                VerticalAlignment="Center"
                                                                Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisConverter}}" />
                                                     <TextBlock Text="{Binding DisplayName}"
-                                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                                                TextTrimming="CharacterEllipsis"
-                                                               VerticalAlignment="Center" />
+                                                               VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
                                                 </StackPanel>
 
                                                 <Button Grid.Column="1"
@@ -878,15 +899,9 @@
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
                                                         <MenuItem Header="🔀 Merge into current branch..."
                                                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
-                                                            <MenuItem Header="Merge (Default)"
-                                                                      Command="{Binding DataContext.MergeIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
-                                                            <MenuItem Header="Squash and Merge..."
-                                                                      Command="{Binding DataContext.MergeSquashIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
-                                                            <MenuItem Header="Merge (--no-ff)..."
-                                                                      Command="{Binding DataContext.MergeNoFfIntoCurrentBranchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                      CommandParameter="{Binding Branch}" />
+                                                            <MenuItem Header="Merge (Default)" Click="OnMergeDefaultClicked" />
+                                                            <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
+                                                            <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
                                                         <MenuItem Header="📋 Copy Branch Name"
                                                                   Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -904,7 +919,18 @@
                                                             MouseLeftButtonDown="OnBranchFolderRowMouseDown"
                                                             Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}}">
                                                     <TextBlock Text="📁 " FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
-                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
                                                 </StackPanel>
 
                                                 <!-- Pinned indicator (leaf branches only) - FallbackValue matters here, same reason
@@ -917,10 +943,20 @@
 
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding DisplayName}"
-                                                           Foreground="{DynamicResource TextSecondaryBrush}"
                                                            TextTrimming="CharacterEllipsis"
                                                            VerticalAlignment="Center"
-                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                           Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
 
                                                 <Button Grid.Column="2"
                                                         Content="Checkout"
@@ -1486,10 +1522,14 @@
                                 <ListBox Grid.Row="1"
                                          ItemsSource="{Binding WorkingChanges.UnstagedFiles}"
                                          SelectedItem="{Binding WorkingChanges.SelectedFile}"
+                                         SelectionMode="Extended"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
+                                            <MenuItem Header="Stage Selected" Click="OnStageSelectedFilesClicked" />
+                                            <MenuItem Header="Discard Selected..." Click="OnDiscardSelectedFilesClicked" />
+                                            <Separator />
                                             <MenuItem Header="Stage File"
                                                       Command="{Binding WorkingChanges.StageFileCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
@@ -1619,11 +1659,14 @@
                                 <ListBox Grid.Row="1"
                                          ItemsSource="{Binding WorkingChanges.StagedFiles}"
                                          SelectedItem="{Binding WorkingChanges.SelectedFile}"
+                                         SelectionMode="Extended"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
                                          MaxHeight="180">
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
+                                            <MenuItem Header="Unstage Selected" Click="OnUnstageSelectedFilesClicked" />
+                                            <Separator />
                                             <MenuItem Header="Unstage File"
                                                       Command="{Binding WorkingChanges.UnstageFileCommand}"
                                                       CommandParameter="{Binding WorkingChanges.SelectedFile}" />
@@ -2442,6 +2485,14 @@
                     </Grid>
 
                     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+                        <!-- Always available regardless of git state - the merge/rebase being
+                             tracked may already have been finished or aborted outside Girt
+                             (another tool, another terminal), in which case Abort/Continue
+                             would just fail and leave this dialog with no way out. -->
+                        <Button Content="Close"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CloseMergeConflictDialogCommand}"
+                                Margin="0,0,8,0" />
                         <Button Content="{Binding AbortMergeButtonLabel}"
                                 Style="{StaticResource StandardButtonStyle}"
                                 Command="{Binding AbortMergeCommand}"
@@ -2547,6 +2598,64 @@
                         <Button Content="Cancel"
                                 Style="{StaticResource StandardButtonStyle}"
                                 Command="{Binding CancelPushRejectedDialogCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: NO UPSTREAM BRANCH - a brand-new local branch has never been pushed, so
+             there's nowhere for a plain `git push` to send it, mirroring Git Extensions'
+             "Publish branch" prompt instead of just showing the raw git error text. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsPushNoUpstreamDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="480"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="🌱 No Upstream Branch"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,8" />
+                    <TextBlock Text="This branch doesn't exist on origin yet, so there's nowhere to push to."
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,16" />
+
+                    <!-- Publish Branch Option -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,16">
+                        <Button Command="{Binding ConfirmPushSetUpstreamCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock Text="Publish Branch" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <TextBlock Text="Creates this branch on origin, sets it as the upstream, and pushes your commits."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancel"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CancelPushNoUpstreamDialogCommand}" />
                     </StackPanel>
                 </StackPanel>
             </Border>

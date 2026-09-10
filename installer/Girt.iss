@@ -1,10 +1,15 @@
 ; Girt - Inno Setup Installer Script
 ; Build (unsigned): iscc installer\Girt.iss
-; Build (signed): build-setup.bat (passes /DUSINGSIGNTOOL + /SGirtSign=... to ISCC)
+; Build (signed): build-setup.bat (passes /DUSINGSIGNTOOL + /SGirtSign=... + /DMyAppVersion=... to ISCC)
 ; Requires: dotnet build src\Girt\Girt.csproj -c Release (run first)
 
 #define MyAppName "Girt"
-#define MyAppVersion "0.4.45"
+; build-setup.bat reads <Version> out of Girt.csproj and passes it in via /DMyAppVersion, so
+; there's a single source of truth for the version instead of a second copy going stale here -
+; this fallback only applies when compiling directly with `iscc Girt.iss`.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "Girt"
 #define MyAppExeName "Girt.exe"
 

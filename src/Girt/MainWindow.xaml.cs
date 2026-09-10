@@ -223,19 +223,86 @@ namespace Girt
         // rewrite), so resolve the branch directly off the clicked MenuItem's DataContext.
         private void OnDeleteBranchClicked(object sender, RoutedEventArgs e)
         {
-            if (sender is not MenuItem menuItem) return;
-
-            var branch = menuItem.DataContext switch
-            {
-                GitBranch b => b,
-                BranchTreeItem { IsFolder: false } item => item.Branch,
-                _ => null
-            };
-
-            if (branch != null)
+            if (ResolveBranchFromMenuItem(sender) is { } branch)
             {
                 _viewModel.BranchList.DeleteBranchCommand.Execute(branch);
             }
+        }
+
+        // Same rationale as OnDeleteBranchClicked - these are nested submenu items (an extra
+        // Popup layer on top of the branch tree's own ContextMenu Popup), so if anything was
+        // going to hit the Command+RelativeSource-through-Popup unreliability documented in
+        // AIREADME.md #12, a doubly-nested Popup was always the most likely candidate. Confirmed
+        // broken in practice ("This doing nothing" clicking Merge (Default) from the branch
+        // tree) - resolve the branch directly off the clicked MenuItem's DataContext instead.
+        private void OnMergeDefaultClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveBranchFromMenuItem(sender) is { } branch)
+            {
+                _viewModel.MergeIntoCurrentBranchCommand.Execute(branch);
+            }
+        }
+
+        private void OnMergeSquashClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveBranchFromMenuItem(sender) is { } branch)
+            {
+                _viewModel.MergeSquashIntoCurrentBranchCommand.Execute(branch);
+            }
+        }
+
+        private void OnMergeNoFfClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveBranchFromMenuItem(sender) is { } branch)
+            {
+                _viewModel.MergeNoFfIntoCurrentBranchCommand.Execute(branch);
+            }
+        }
+
+        private static GitBranch? ResolveBranchFromMenuItem(object sender) =>
+            sender is MenuItem menuItem
+                ? menuItem.DataContext switch
+                {
+                    GitBranch b => b,
+                    BranchTreeItem { IsFolder: false } item => item.Branch,
+                    _ => null
+                }
+                : null;
+
+        // Multi-select bulk actions for the Unstaged/Staged file lists (matching GitExtensions'
+        // "Stage selected"/"Delete files" on a multi-selection) - the ListBox itself carries the
+        // live selection (SelectionMode="Extended" in XAML), so read it directly off its
+        // ContextMenu.PlacementTarget rather than needing a bound SelectedItems collection
+        // (ListBox.SelectedItems isn't a dependency property and can't be bound two-way).
+        private void OnStageSelectedFilesClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveSelectedWorkingFiles(sender) is { } files)
+            {
+                _viewModel.WorkingChanges.StageSelectedFilesCommand.Execute(files);
+            }
+        }
+
+        private void OnUnstageSelectedFilesClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveSelectedWorkingFiles(sender) is { } files)
+            {
+                _viewModel.WorkingChanges.UnstageSelectedFilesCommand.Execute(files);
+            }
+        }
+
+        private void OnDiscardSelectedFilesClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveSelectedWorkingFiles(sender) is { } files)
+            {
+                _viewModel.WorkingChanges.DiscardSelectedFilesCommand.Execute(files);
+            }
+        }
+
+        private static List<GitWorkingFile>? ResolveSelectedWorkingFiles(object sender)
+        {
+            if (sender is not MenuItem { Parent: ContextMenu { PlacementTarget: ListBox listBox } }) return null;
+            var files = listBox.SelectedItems.Cast<GitWorkingFile>().ToList();
+            return files.Count > 0 ? files : null;
         }
 
         private void OnClearIsolationClicked(object sender, RoutedEventArgs e)
