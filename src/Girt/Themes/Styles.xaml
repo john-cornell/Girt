@@ -102,6 +102,36 @@
         </Setter>
     </Style>
 
+    <!-- Panel collapse/expand toggle - a small round chip sitting on a GridSplitter. Needs a
+         visible resting background + border (unlike ToolButtonStyle's transparent-until-hover),
+         since a transparent 16x16 button on a 4px splitter line is effectively invisible. -->
+    <Style TargetType="{x:Type Button}" x:Key="PanelToggleButtonStyle">
+        <Setter Property="Background" Value="{DynamicResource CardBackgroundBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Button}">
+                    <Border x:Name="border"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="border" Property="Background" Value="{DynamicResource HoverBackgroundBrush}" />
+                            <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource BorderAccentBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Clean Input Box Style -->
     <Style TargetType="{x:Type TextBox}" x:Key="ModernTextBoxStyle">
         <Setter Property="Background" Value="{DynamicResource InputBackgroundBrush}" />

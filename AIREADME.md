@@ -201,8 +201,9 @@ reason to believe it can't eventually just hang forever on some run.
 
 **The fix is never "let it ride, it passed once."** Either:
 - The dialog is already behind an injectable delegate (`ConfirmStashAction` on
-  `WorkingChangesViewModel`, `ConfirmNothingToPushAction` on `MainViewModel`) — set it in the test
-  before calling the command, same as any other test in this codebase already does.
+  `WorkingChangesViewModel`, `ConfirmNothingToPushAction` / `ConfirmConfigureKDiff3Action` /
+  `ReportMergeToolLaunchFailureAction` on `MainViewModel`) — set it in the test before calling the
+  command, same as any other test in this codebase already does.
 - It isn't injectable (most plain error-reporting `MessageBox.Show(...)` calls aren't, and adding
   a delegate for every single one would be its own kind of over-engineering) — then don't call the
   command end-to-end in a test. Verify the surrounding logic (a classification helper, a guard

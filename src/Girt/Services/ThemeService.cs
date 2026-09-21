@@ -46,6 +46,12 @@ namespace Girt.Services
         /// passes `-w` to git so whitespace-only changes don't show up as diff noise.</summary>
         public bool IgnoreWhitespaceInDiffs { get; set; } = false;
 
+        /// <summary>Whether every git command's duration is logged to girt.log, not just the
+        /// slow ones. See LogService - exceptions and slow commands are always logged
+        /// regardless of this setting; this only controls the noisy "every command" case,
+        /// useful when actively chasing a performance issue.</summary>
+        public bool EnableTimingLogs { get; set; } = false;
+
         /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
         public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
     }
@@ -192,6 +198,15 @@ namespace Girt.Services
         {
             var settings = LoadSettings();
             settings.IgnoreWhitespaceInDiffs = value;
+            SaveSettings(settings);
+        }
+
+        public bool LoadEnableTimingLogs() => LoadSettings().EnableTimingLogs;
+
+        public void SaveEnableTimingLogs(bool value)
+        {
+            var settings = LoadSettings();
+            settings.EnableTimingLogs = value;
             SaveSettings(settings);
         }
 

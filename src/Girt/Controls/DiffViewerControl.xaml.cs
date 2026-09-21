@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Girt.Models;
+using Girt.Services;
 using Girt.ViewModels;
 
 namespace Girt.Controls
@@ -176,9 +177,11 @@ namespace Girt.Controls
                 .Where(l => l.Type is DiffLineType.Added or DiffLineType.Deleted or DiffLineType.Context)
                 .Select(l => l.Text.Length > 0 ? l.Text.Substring(1) : l.Text));
 
-            if (!string.IsNullOrEmpty(text))
+            if (!string.IsNullOrEmpty(text) && !ClipboardHelper.TrySetText(text))
             {
-                Clipboard.SetText(text);
+                MessageBox.Show(
+                    "Could not copy to clipboard - it's in use by another app. Try again.",
+                    "Copy Line(s)", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
     }

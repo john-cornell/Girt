@@ -166,6 +166,14 @@ namespace Girt.Tests
             LastPushSetUpstreamBranch = branchName;
             return Task.FromResult((NextPushSucceeds, NextPushOutput));
         }
+        public bool PushToUpstreamBranchCalled { get; set; }
+        public string? LastPushToUpstreamBranchName { get; set; }
+        public Task<(bool Success, string Output)> PushToUpstreamBranchAsync(string repoPath, string upstreamBranchName)
+        {
+            PushToUpstreamBranchCalled = true;
+            LastPushToUpstreamBranchName = upstreamBranchName;
+            return Task.FromResult((NextPushSucceeds, NextPushOutput));
+        }
         public Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false) => Task.FromResult(NextPullSucceeds ? (true, "Pulled") : (false, "Pull failed"));
         public Task<(bool Success, string Output)> FetchAllAsync(string repoPath)
         {
@@ -1307,6 +1315,38 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task MainViewModel_SelectingBranch_SelectsItsTipCommitInTheGraph()
+        {
+            var tip = new GitCommit { Hash = "feat2", ParentHashes = new List<string> { "feat1" }, Subject = "Feature commit 2" };
+            var feat1 = new GitCommit { Hash = "feat1", ParentHashes = new List<string> { "root1" }, Subject = "Feature commit 1" };
+            var root1 = new GitCommit { Hash = "root1", Subject = "Root" };
+            var fakeGit = new FakeGitService
+            {
+                Commits = new List<GitCommit> { tip, feat1, root1 }
+            };
+
+            var recentService = new RecentRepositoriesService();
+            var themeService = CreateIsolatedThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+            await mainVm.CommitHistory.LoadCommitsAsync();
+            // Loading auto-selects the top-of-list commit ("feat2") - pick a branch pointing
+            // somewhere else in the history so selecting it is a real, observable change.
+            Assert.Equal("feat2", mainVm.CommitHistory.SelectedCommit?.Hash);
+
+            // The BranchList->CommitHistory hook (MainViewModel's constructor) runs as an async
+            // void PropertyChanged handler, same fire-and-forget shape as
+            // WorkingChangesViewModel.OnSelectedFileChanged elsewhere in this file - give it a
+            // moment to actually finish before asserting.
+            mainVm.BranchList.SelectedBranch = new GitBranch { Name = "feature/x", TipCommitHash = "root1" };
+            await Task.Delay(50);
+
+            Assert.Equal("root1", mainVm.CommitHistory.SelectedCommit?.Hash);
+        }
+
+        [Fact]
         public async Task MainViewModel_Commit_SplicesNewCommitLocallyAndBumpsAheadCountWithoutFullRefresh()
         {
             var fakeGit = new FakeGitService
@@ -1515,6 +1555,81 @@ namespace Girt.Tests
             Assert.True(fakeGit.PushSetUpstreamCalled);
             Assert.Equal("feature-x", fakeGit.LastPushSetUpstreamBranch);
             Assert.False(mainVm.IsPushNoUpstreamDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_PushAsync_UpstreamBranchNameMismatch_OpensBranchMismatchDialog()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: The upstream branch of your current branch does not match\n" +
+                                 "the name of your current branch.  To push to the upstream branch\n" +
+                                 "on the remote, use\n\n    git push origin HEAD:develop\n"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "BB-19962-optimize-fee-updates",
+                RepoStatus = new GitRepoStatus { UpstreamBranch = "origin/develop" }
+            };
+
+            await mainVm.PushCommand.ExecuteAsync(null);
+
+            Assert.True(mainVm.IsPushBranchMismatchDialogOpen);
+            Assert.False(mainVm.IsPushNoUpstreamDialogOpen);
+            Assert.False(mainVm.IsPushRejectedDialogOpen);
+            Assert.Equal("develop", mainVm.UpstreamBranchShortName);
+        }
+
+        [Fact]
+        public async Task MainViewModel_ConfirmPushToUpstreamBranch_PushesToConfiguredUpstreamName()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: The upstream branch of your current branch does not match"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "BB-19962-optimize-fee-updates",
+                RepoStatus = new GitRepoStatus { UpstreamBranch = "origin/develop" }
+            };
+            await mainVm.PushCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsPushBranchMismatchDialogOpen);
+
+            fakeGit.NextPushSucceeds = true;
+            await mainVm.ConfirmPushToUpstreamBranchCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushToUpstreamBranchCalled);
+            Assert.Equal("develop", fakeGit.LastPushToUpstreamBranchName);
+            Assert.False(mainVm.IsPushBranchMismatchDialogOpen);
+        }
+
+        [Fact]
+        public async Task MainViewModel_ConfirmPushToSameNameBranch_PublishesCurrentBranchToOrigin()
+        {
+            var fakeGit = new FakeGitService
+            {
+                NextPushSucceeds = false,
+                NextPushOutput = "fatal: The upstream branch of your current branch does not match"
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "BB-19962-optimize-fee-updates",
+                RepoStatus = new GitRepoStatus { UpstreamBranch = "origin/develop" }
+            };
+            await mainVm.PushCommand.ExecuteAsync(null);
+            Assert.True(mainVm.IsPushBranchMismatchDialogOpen);
+
+            fakeGit.NextPushSucceeds = true;
+            await mainVm.ConfirmPushToSameNameBranchCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushSetUpstreamCalled);
+            Assert.Equal("BB-19962-optimize-fee-updates", fakeGit.LastPushSetUpstreamBranch);
+            Assert.False(mainVm.IsPushBranchMismatchDialogOpen);
         }
 
         [Fact]
@@ -1792,26 +1907,37 @@ index 1234567..89abcdef 100644
             var savedMinimizeToTray = new List<bool>();
             var savedMinimizeOnClose = new List<bool>();
             var savedFolderClickMode = new List<bool>();
+            var savedEnableTimingLogs = new List<bool>();
 
             var vm = new SettingsViewModel(
                 new FakeGitService(), () => @"C:\FakeRepo",
                 true, v => savedMinimizeToTray.Add(v),
                 false, v => savedMinimizeOnClose.Add(v),
-                true, v => savedFolderClickMode.Add(v));
+                true, v => savedFolderClickMode.Add(v),
+                false, v => savedEnableTimingLogs.Add(v));
 
             // Initial values come from the injected loaders, with no save triggered yet.
             Assert.True(vm.MinimizeToTray);
             Assert.False(vm.MinimizeOnClose);
             Assert.True(vm.FolderExpandOnSingleClick);
+            Assert.False(vm.EnableTimingLogs);
             Assert.Empty(savedMinimizeToTray);
 
             vm.MinimizeToTray = false;
             vm.MinimizeOnClose = true;
             vm.FolderExpandOnSingleClick = false;
+            vm.EnableTimingLogs = true;
 
             Assert.Equal(new[] { false }, savedMinimizeToTray);
             Assert.Equal(new[] { true }, savedMinimizeOnClose);
             Assert.Equal(new[] { false }, savedFolderClickMode);
+            Assert.Equal(new[] { true }, savedEnableTimingLogs);
+            // Toggling the setting also flips the live static flag LogService.Timing reads -
+            // no separate app-restart step needed to take effect.
+            Assert.True(LogService.EnableTimingLogs);
+
+            vm.EnableTimingLogs = false;
+            Assert.False(LogService.EnableTimingLogs);
         }
 
         [Fact]
@@ -1821,7 +1947,7 @@ index 1234567..89abcdef 100644
             fakeGit.GlobalConfig["user.name"] = "Global Name";
             fakeGit.GlobalConfig["user.email"] = "global@example.com";
 
-            var vm = new SettingsViewModel(fakeGit, () => @"C:\FakeRepo", true, _ => { }, true, _ => { }, true, _ => { });
+            var vm = new SettingsViewModel(fakeGit, () => @"C:\FakeRepo", true, _ => { }, true, _ => { }, true, _ => { }, false, _ => { });
             await vm.LoadGitIdentityAsync();
 
             Assert.Equal("Global Name", vm.GlobalUserName);
@@ -1844,6 +1970,41 @@ index 1234567..89abcdef 100644
             await vm.RemoveLocalIdentityOverrideCommand.ExecuteAsync(null);
             Assert.False(vm.HasLocalIdentityOverride);
             Assert.DoesNotContain("user.name", fakeGit.LocalConfig.Keys);
+        }
+
+        [Fact]
+        public async Task SettingsViewModel_MergeTool_LoadsSavesAndSupportsPresetPicker()
+        {
+            var fakeGit = new FakeGitService();
+            var vm = new SettingsViewModel(fakeGit, () => @"C:\FakeRepo", true, _ => { }, true, _ => { }, true, _ => { }, false, _ => { });
+
+            // Nothing configured yet.
+            await vm.LoadMergeToolSettingsAsync();
+            Assert.Equal(string.Empty, vm.MergeToolName);
+            Assert.Equal(string.Empty, vm.MergeToolPath);
+
+            // Clicking a preset chip sets the name and clears any stale path from a
+            // previously-selected tool.
+            vm.MergeToolPath = @"C:\old\tool.exe";
+            vm.SetMergeToolPresetCommand.Execute("meld");
+            Assert.Equal("meld", vm.MergeToolName);
+            Assert.Equal(string.Empty, vm.MergeToolPath);
+
+            // Saving writes merge.tool globally, and only writes mergetool.<name>.path when a
+            // path override was actually given.
+            await vm.SaveMergeToolCommand.ExecuteAsync(null);
+            Assert.Equal("meld", fakeGit.GlobalConfig["merge.tool"]);
+            Assert.DoesNotContain("mergetool.meld.path", fakeGit.GlobalConfig.Keys);
+
+            vm.MergeToolPath = @"C:\Program Files\Meld\meld.exe";
+            await vm.SaveMergeToolCommand.ExecuteAsync(null);
+            Assert.Equal("C:/Program Files/Meld/meld.exe", fakeGit.GlobalConfig["mergetool.meld.path"]);
+
+            // A later load round-trips both values back out.
+            var vm2 = new SettingsViewModel(fakeGit, () => @"C:\FakeRepo", true, _ => { }, true, _ => { }, true, _ => { }, false, _ => { });
+            await vm2.LoadMergeToolSettingsAsync();
+            Assert.Equal("meld", vm2.MergeToolName);
+            Assert.Equal("C:/Program Files/Meld/meld.exe", vm2.MergeToolPath);
         }
 
         [Fact]
@@ -1954,6 +2115,35 @@ index 1234567..89abcdef 100644
         }
 
         [Fact]
+        public async Task MainViewModel_OpenConflictFileInEditor_NotConfigured_NewGitWording_ConfiguresKDiff3AndRetries()
+        {
+            // git 2.44+'s C builtin mergetool prints a different message than the old
+            // Perl/shell script did - just a usage synopsis ending in this line, with no
+            // "'merge.tool' is not configured" text anywhere. Real output seen from git
+            // 2.51 when nothing is configured.
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                NextMergeToolSucceeds = false,
+                NextMergeToolOutput = "usage: git mergetool [--tool=tool] [--tool-help]\n\nMake sure a merge tool is configured (git config merge.tool).",
+                ConflictedFiles = { new MergeConflictFile { Path = "a.cs", ConflictType = MergeConflictType.BothModified } }
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                ConfirmConfigureKDiff3Action = _ => true
+            };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+
+            await mainVm.OpenConflictFileInEditorCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+
+            Assert.True(fakeGit.ConfigureKDiff3Called);
+            Assert.Equal("a.cs", fakeGit.LastMergeToolFilePath);
+        }
+
+        [Fact]
         public async Task MainViewModel_OpenConflictFileInEditor_NotConfigured_ConfirmNo_DoesNotConfigure()
         {
             var fakeGit = new FakeGitService
@@ -1966,7 +2156,10 @@ index 1234567..89abcdef 100644
             var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
             {
                 RepositoryPath = @"C:\FakeRepo",
-                ConfirmConfigureKDiff3Action = _ => false
+                ConfirmConfigureKDiff3Action = _ => false,
+                // Declining the offer falls through to the generic "could not launch" report -
+                // stub it out so this doesn't pop a real MessageBox during the test run.
+                ReportMergeToolLaunchFailureAction = _ => { }
             };
 
             await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });
@@ -1992,7 +2185,10 @@ index 1234567..89abcdef 100644
                 RepositoryPath = @"C:\FakeRepo",
                 // Would confirm if asked - proves the gate is the specific "not configured"
                 // message, not just any failure.
-                ConfirmConfigureKDiff3Action = _ => true
+                ConfirmConfigureKDiff3Action = _ => true,
+                // Falls straight through to the generic failure report - stub it out so this
+                // doesn't pop a real MessageBox during the test run.
+                ReportMergeToolLaunchFailureAction = _ => { }
             };
 
             await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "feature/x" });

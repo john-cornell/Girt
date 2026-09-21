@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -46,6 +44,12 @@ namespace Girt.ViewModels
 
         [ObservableProperty]
         private GitRepoStatus _repoStatus = new();
+
+        // RepoStatus is reassigned wholesale rather than mutated (see UpdateRepoStatusLocally),
+        // so UpstreamBranchShortName - a computed property derived from it, bound directly by
+        // the branch-mismatch push dialog - needs its own notification or the dialog would show
+        // whatever it evaluated to at startup (before the first real repo load) forever after.
+        partial void OnRepoStatusChanged(GitRepoStatus value) => OnPropertyChanged(nameof(UpstreamBranchShortName));
 
         [ObservableProperty]
         private ActiveViewMode _currentView = ActiveViewMode.History;
@@ -208,6 +212,13 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private bool _isPushNoUpstreamDialogOpen;
 
+        // Branch-Name-Mismatch Dialog State - shown when a push fails because the current
+        // branch's upstream is a differently-named branch (e.g. a feature branch that's tracking
+        // origin/develop) - git itself suggests the two recovery commands this dialog offers as
+        // buttons, instead of just dumping the raw "usage:"-style git error.
+        [ObservableProperty]
+        private bool _isPushBranchMismatchDialogOpen;
+
         public BranchListViewModel BranchList { get; }
         public CommitHistoryViewModel CommitHistory { get; }
         public CommitDetailViewModel CommitDetail { get; }
@@ -265,19 +276,25 @@ namespace Girt.ViewModels
                 _themeService.LoadMinimizeOnClose(),
                 _themeService.SaveMinimizeOnClose,
                 _themeService.LoadFolderExpandOnSingleClick(),
-                _themeService.SaveFolderExpandOnSingleClick);
+                _themeService.SaveFolderExpandOnSingleClick,
+                _themeService.LoadEnableTimingLogs(),
+                _themeService.SaveEnableTimingLogs);
 
             _pushPillOpensReview = _themeService.LoadPushPillOpensReview();
             _autoRefresh = _themeService.LoadAutoRefresh();
             _ignoreWhitespaceInDiffs = _themeService.LoadIgnoreWhitespaceInDiffs();
 
-            // Hook branch selection change to update association view immediately
-            BranchList.PropertyChanged += (s, e) =>
+            // Hook branch selection change to update association view immediately, and bring
+            // the branch's tip commit into view/selected in the graph - same as clicking a
+            // commit directly, so picking a branch actually shows you something happened.
+            BranchList.PropertyChanged += async (s, e) =>
             {
                 if (e.PropertyName == nameof(BranchList.SelectedBranch) && BranchList.SelectedBranch != null)
                 {
-                    CommitHistory.SetBranches(BranchList.AllBranches, BranchList.SelectedBranch.Name);
-                    _ = CommitHistory.ApplyFilterAsync();
+                    var selectedBranch = BranchList.SelectedBranch;
+                    CommitHistory.SetBranches(BranchList.AllBranches, selectedBranch.Name);
+                    await CommitHistory.ApplyFilterAsync();
+                    CommitHistory.SelectBranchTip(selectedBranch);
                 }
             };
 
@@ -690,6 +707,11 @@ namespace Girt.ViewModels
                     IsPushNoUpstreamDialogOpen = true;
                     StatusMessage = "This branch doesn't exist on the remote yet.";
                 }
+                else if (IsUpstreamBranchNameMismatch(output))
+                {
+                    IsPushBranchMismatchDialogOpen = true;
+                    StatusMessage = "This branch's upstream has a different name.";
+                }
                 else
                 {
                     MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -707,11 +729,94 @@ namespace Girt.ViewModels
         private static bool IsNoUpstreamRejection(string output) =>
             output.Contains("has no upstream branch");
 
+        private static bool IsUpstreamBranchNameMismatch(string output) =>
+            output.Contains("The upstream branch of your current branch does not match");
+
+        // "origin/develop" -> "develop" - RepoStatus.UpstreamBranch always comes back
+        // remote-qualified (see GitCliService.GetRepoStatusAsync's `rev-parse --abbrev-ref @{u}`),
+        // but `git push origin HEAD:<name>` wants just the branch name on the remote side.
+        public string? UpstreamBranchShortName
+        {
+            get
+            {
+                var upstream = RepoStatus?.UpstreamBranch;
+                if (string.IsNullOrEmpty(upstream)) return upstream;
+                var slashIndex = upstream.IndexOf('/');
+                return slashIndex >= 0 ? upstream[(slashIndex + 1)..] : upstream;
+            }
+        }
+
         [RelayCommand]
         public void CancelPushRejectedDialog() => IsPushRejectedDialogOpen = false;
 
         [RelayCommand]
         public void CancelPushNoUpstreamDialog() => IsPushNoUpstreamDialogOpen = false;
+
+        [RelayCommand]
+        public void CancelPushBranchMismatchDialog() => IsPushBranchMismatchDialogOpen = false;
+
+        // Option 1 from git's own suggestion: push HEAD to the differently-named branch that's
+        // already configured as upstream, leaving the tracking relationship as-is.
+        [RelayCommand]
+        public async Task ConfirmPushToUpstreamBranchAsync()
+        {
+            IsPushBranchMismatchDialogOpen = false;
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var upstreamShortName = UpstreamBranchShortName;
+            if (string.IsNullOrEmpty(upstreamShortName)) return;
+
+            IsLoading = true;
+            StatusMessage = $"Pushing to '{upstreamShortName}'...";
+            try
+            {
+                var (success, output) = await _gitService.PushToUpstreamBranchAsync(RepositoryPath, upstreamShortName);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = "Push successful!";
+                }
+                else
+                {
+                    MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        // Option 2 from git's own suggestion: push HEAD to a new branch of the same name on the
+        // remote instead, and make that the branch's upstream going forward - same recovery as
+        // the "no upstream yet" case, since the net effect (same-named remote branch, tracked)
+        // is identical.
+        [RelayCommand]
+        public async Task ConfirmPushToSameNameBranchAsync()
+        {
+            IsPushBranchMismatchDialogOpen = false;
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            IsLoading = true;
+            StatusMessage = $"Publishing branch '{CurrentBranch}' to origin...";
+            try
+            {
+                var (success, output) = await _gitService.PushSetUpstreamAsync(RepositoryPath, CurrentBranch);
+                if (success)
+                {
+                    await RefreshRepositoryAsync();
+                    StatusMessage = "Push successful!";
+                }
+                else
+                {
+                    MessageBox.Show($"Push failed:\n{output}", "Git Push Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
 
         [RelayCommand]
         public async Task ConfirmPushSetUpstreamAsync()
@@ -973,6 +1078,7 @@ namespace Girt.ViewModels
         {
             IsSettingsDialogOpen = true;
             await Settings.LoadGitIdentityAsync();
+            await Settings.LoadMergeToolSettingsAsync();
         }
 
         [RelayCommand]
@@ -982,37 +1088,8 @@ namespace Girt.ViewModels
         }
 
         // ================= CLIPBOARD COPY COMMANDS =================
-
-        // The Windows clipboard is a single shared, cross-process resource: any other app
-        // (clipboard managers, RDP, antivirus scanners) can hold it open for a few
-        // milliseconds, which makes OpenClipboard - and so Clipboard.SetText - fail
-        // transiently with CLIPBRD_E_CANT_OPEN (0x800401D0). Retry briefly before giving up.
-        private static bool TrySetClipboardText(string text)
-        {
-            const int maxAttempts = 10;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
-            {
-                try
-                {
-                    Clipboard.SetText(text);
-                    return true;
-                }
-                catch (COMException)
-                {
-                    // The `when (attempt < maxAttempts)` guard this used to have meant the final
-                    // attempt's exception wasn't caught at all - it escaped straight to WPF's
-                    // global unhandled-exception handler as a crash dialog, instead of falling
-                    // through to the graceful `return false` below. Catch every attempt; only
-                    // skip the sleep on the last one since there's nothing left to wait for.
-                    if (attempt < maxAttempts)
-                    {
-                        Thread.Sleep(50);
-                    }
-                }
-            }
-
-            return false;
-        }
+        // Retry-on-transient-failure logic lives in ClipboardHelper.TrySetText (shared with
+        // DiffViewerControl's "Copy Line(s)" - see that class for why the retry matters).
 
         [RelayCommand]
         public void CopyCommitSha(object? parameter)
@@ -1020,7 +1097,7 @@ namespace Girt.ViewModels
             var hash = (parameter as GitCommit)?.Hash ?? CommitHistory.SelectedCommit?.Hash;
             if (!string.IsNullOrEmpty(hash))
             {
-                StatusMessage = TrySetClipboardText(hash)
+                StatusMessage = ClipboardHelper.TrySetText(hash)
                     ? $"Copied SHA {hash[..Math.Min(7, hash.Length)]} to clipboard."
                     : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
@@ -1032,7 +1109,7 @@ namespace Girt.ViewModels
             var shortHash = (parameter as GitCommit)?.ShortHash ?? CommitHistory.SelectedCommit?.ShortHash;
             if (!string.IsNullOrEmpty(shortHash))
             {
-                StatusMessage = TrySetClipboardText(shortHash)
+                StatusMessage = ClipboardHelper.TrySetText(shortHash)
                     ? $"Copied SHA {shortHash} to clipboard."
                     : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
@@ -1044,7 +1121,7 @@ namespace Girt.ViewModels
             var msg = (parameter as GitCommit)?.Subject ?? CommitHistory.SelectedCommit?.Subject;
             if (!string.IsNullOrEmpty(msg))
             {
-                StatusMessage = TrySetClipboardText(msg)
+                StatusMessage = ClipboardHelper.TrySetText(msg)
                     ? "Copied commit message to clipboard."
                     : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
@@ -1059,7 +1136,7 @@ namespace Girt.ViewModels
                 var text = string.IsNullOrEmpty(commit.AuthorEmail)
                     ? commit.AuthorName
                     : $"{commit.AuthorName} <{commit.AuthorEmail}>";
-                StatusMessage = TrySetClipboardText(text)
+                StatusMessage = ClipboardHelper.TrySetText(text)
                     ? $"Copied author '{text}' to clipboard."
                     : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
@@ -1071,7 +1148,7 @@ namespace Girt.ViewModels
             var name = (parameter as GitBranch)?.Name ?? (parameter as string) ?? CurrentBranch;
             if (!string.IsNullOrEmpty(name))
             {
-                StatusMessage = TrySetClipboardText(name)
+                StatusMessage = ClipboardHelper.TrySetText(name)
                     ? $"Copied branch name '{name}' to clipboard."
                     : "Could not copy to clipboard - it's in use by another app. Try again.";
             }
@@ -1276,6 +1353,13 @@ namespace Girt.ViewModels
         public Func<string, bool> ConfirmConfigureKDiff3Action { get; set; } =
             message => MessageBox.Show(message, "No Merge Tool Configured", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 
+        // Overridable so tests that exercise the "declined kdiff3 offer" or "some other launch
+        // failure" paths don't fall through to a real MessageBox.Show - see AIREADME.md #13:
+        // a real, invisible-to-the-agent modal popped here on every such test run and is a
+        // hang risk, not just noise.
+        public Action<string> ReportMergeToolLaunchFailureAction { get; set; } =
+            message => MessageBox.Show(message, "Open In Merge Tool", MessageBoxButton.OK, MessageBoxImage.Error);
+
         [RelayCommand]
         public async Task OpenConflictFileInEditorAsync(MergeConflictFile? file)
         {
@@ -1287,7 +1371,12 @@ namespace Girt.ViewModels
             // merge.tool - installing a tool like kdiff3 doesn't register it with git on its
             // own. Offer the one tool most people on Windows already have (or is what
             // GitExtensions itself is commonly pointed at) instead of just failing.
-            if (!success && output.Contains("'merge.tool' is not configured") &&
+            //
+            // The exact wording differs by git version: older git (the Perl/shell mergetool
+            // script) says "'merge.tool' is not configured"; git 2.44+'s C builtin instead
+            // prints just a usage synopsis ending in "Make sure a merge tool is configured
+            // (git config merge.tool)." - match both so this still fires on current git.
+            if (!success && (output.Contains("'merge.tool' is not configured") || output.Contains("Make sure a merge tool is configured")) &&
                 ConfirmConfigureKDiff3Action("No merge tool is configured yet.\n\nConfigure kdiff3 as your merge tool and try again?"))
             {
                 var (configured, configureOutput) = await _gitService.ConfigureKDiff3AsMergeToolAsync(RepositoryPath);
@@ -1302,9 +1391,8 @@ namespace Girt.ViewModels
 
             if (!success)
             {
-                MessageBox.Show(
-                    $"Could not launch your merge tool for '{file.Path}':\n{output}\n\nMake sure a merge tool is configured (git config merge.tool).",
-                    "Open In Merge Tool", MessageBoxButton.OK, MessageBoxImage.Error);
+                ReportMergeToolLaunchFailureAction(
+                    $"Could not launch your merge tool for '{file.Path}':\n{output}\n\nMake sure a merge tool is configured (git config merge.tool).");
                 return;
             }
 

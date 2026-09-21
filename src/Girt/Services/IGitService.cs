@@ -34,6 +34,7 @@ namespace Girt.Services
         Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content);
         Task<(bool Success, string Output)> PushAsync(string repoPath);
         Task<(bool Success, string Output)> PushSetUpstreamAsync(string repoPath, string branchName);
+        Task<(bool Success, string Output)> PushToUpstreamBranchAsync(string repoPath, string upstreamBranchName);
         Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false);
         Task<(bool Success, string Output)> FetchAllAsync(string repoPath);
         Task<string?> GetMergeBaseAsync(string repoPath, string ref1, string ref2);

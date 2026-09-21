@@ -311,6 +311,17 @@ namespace Girt.Services
             return (success, (output + "\n" + error).Trim());
         }
 
+        // For the "upstream branch name doesn't match your current branch" case - pushes HEAD to
+        // the differently-named branch that's actually configured as upstream (git's own
+        // suggested "git push origin HEAD:<name>" recovery), rather than the branch adopting a
+        // same-named remote branch (that's PushSetUpstreamAsync's job instead).
+        public async Task<(bool Success, string Output)> PushToUpstreamBranchAsync(string repoPath, string upstreamBranchName)
+        {
+            var cleanBranch = upstreamBranchName.Replace("\"", "\\\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"push origin HEAD:\"{cleanBranch}\"").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
         public async Task<(bool Success, string Output)> PullAsync(string repoPath, bool rebase = false)
         {
             var args = rebase ? "pull --rebase" : "pull";
@@ -571,14 +582,20 @@ namespace Girt.Services
         // base/local/remote/merged file wiring for a real 3-way merge session, and writes the
         // result straight back to the real working-tree file. `--no-prompt` skips the
         // "Hit return to start merge resolution tool" console prompt, which a GUI app spawning
-        // this with no attached console has no way to answer. `--no-backup` stops git leaving a
-        // `<file>.orig` copy behind on success, regardless of the user's own
-        // mergetool.keepBackup setting - Girt's conflict dialog already lets you re-open the
-        // tool as many times as needed, so there's nothing a stray .orig file adds here.
+        // this with no attached console has no way to answer.
+        //
+        // `--no-backup` used to be here too, to stop git leaving a `<file>.orig` copy behind on
+        // success - but git 2.44+'s C-builtin `mergetool` (replacing the old Perl script) simply
+        // doesn't have that flag, and rejects it with a generic "usage: git mergetool ..."
+        // message that reads exactly like "no merge tool configured" (see the ConfirmConfigureKDiff3Action
+        // gate in MainViewModel) even when merge.tool IS correctly set - every single "Open In
+        // Merge Tool" click failed this way, regardless of configuration. `-c mergetool.keepBackup=false`
+        // (a one-off config override, not a mergetool CLI flag) achieves the same "no .orig
+        // file" result and works on both old and new git.
         public async Task<(bool Success, string Output)> LaunchMergeToolAsync(string repoPath, string filePath)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"mergetool --no-prompt --no-backup -- \"{cleanPath}\"").ConfigureAwait(false);
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"-c mergetool.keepBackup=false mergetool --no-prompt -- \"{cleanPath}\"").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
         }
 
@@ -997,6 +1014,7 @@ namespace Girt.Services
 
         private static async Task<(bool Success, string Output, string Error)> RunGitCommandAsync(string workingDirectory, string arguments)
         {
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 // Win32's CreateProcess (which Process.Start uses under the hood) doesn't accept
@@ -1040,11 +1058,13 @@ namespace Girt.Services
                 await process.WaitForExitAsync().ConfigureAwait(false);
 
                 _lastCommandCompletedUtc = DateTime.UtcNow;
+                LogService.Timing($"git {arguments}", stopwatch.ElapsedMilliseconds);
                 return (process.ExitCode == 0, outputBuilder.ToString(), errorBuilder.ToString());
             }
             catch (Exception ex)
             {
                 _lastCommandCompletedUtc = DateTime.UtcNow;
+                LogService.Error($"git {arguments} threw", ex);
                 return (false, string.Empty, ex.Message);
             }
         }

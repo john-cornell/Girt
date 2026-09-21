@@ -214,6 +214,23 @@ namespace Girt.ViewModels
             }
         }
 
+        // Selecting a branch in the sidebar should bring its tip commit into view here too,
+        // same as clicking the commit directly would - otherwise picking a branch that isn't
+        // near the top of a long history leaves the graph looking like nothing happened.
+        // Call after ApplyFilterAsync/ApplyFilterSync so FilteredCommits reflects the branch
+        // just selected (isolation/filters can otherwise exclude the tip and this becomes a
+        // harmless no-op, same as any other SelectedCommit assignment that isn't in the list).
+        public void SelectBranchTip(GitBranch? branch)
+        {
+            if (string.IsNullOrEmpty(branch?.TipCommitHash)) return;
+
+            var commit = FilteredCommits.FirstOrDefault(c => c.Hash == branch.TipCommitHash);
+            if (commit != null)
+            {
+                SelectedCommit = commit;
+            }
+        }
+
         public async Task LoadCommitsAsync()
         {
             var repoPath = _getRepoPath();

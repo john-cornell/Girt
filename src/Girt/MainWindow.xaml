@@ -315,11 +315,11 @@
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <!-- Left Sidebar (Branches) -->
-                <ColumnDefinition Width="280" MinWidth="200" MaxWidth="450" />
+                <ColumnDefinition x:Name="BranchSidebarColumn" Width="280" />
                 <!-- Splitter -->
                 <ColumnDefinition Width="4" />
                 <!-- Right Main Area (Commits Log OR Working Changes) -->
-                <ColumnDefinition Width="*" MinWidth="550" />
+                <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
             <!-- ================= LEFT SIDEBAR ================= -->
@@ -339,31 +339,28 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- View Navigation Tabs -->
+                    <!-- View Navigation Tabs - state-driven: only the button for the OTHER view
+                         shows, since you're already looking at whichever one it would otherwise
+                         navigate to. -->
                     <Grid Grid.Row="0" Margin="0,0,0,14">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-
-                        <Button Grid.Column="0"
-                                Command="{Binding ShowHistoryViewCommand}"
+                        <Button Command="{Binding ShowHistoryViewCommand}"
                                 Style="{StaticResource StandardButtonStyle}"
-                                Margin="0,0,4,0"
                                 Padding="6,6"
                                 FontWeight="SemiBold"
-                                ToolTip="View commit history log and branch DAG graph">
+                                HorizontalAlignment="Stretch"
+                                ToolTip="View commit history log and branch DAG graph"
+                                Visibility="{Binding IsWorkingChangesView, Converter={StaticResource BoolToVisConverter}}">
                             <TextBlock Text="⑂ Show Commits" VerticalAlignment="Center" HorizontalAlignment="Center" />
                         </Button>
 
-                        <Button Grid.Column="1"
-                                Command="{Binding ShowWorkingChangesViewCommand}"
+                        <Button Command="{Binding ShowWorkingChangesViewCommand}"
                                 Style="{StaticResource StandardButtonStyle}"
-                                Margin="4,0,0,0"
                                 Padding="6,6"
                                 FontWeight="SemiBold"
-                                ToolTip="View staged and unstaged working tree changes">
-                            <TextBlock Text="{Binding RepoStatus.UncommittedCount, StringFormat='✎ Changes ({0})'}"
+                                HorizontalAlignment="Stretch"
+                                ToolTip="View staged and unstaged working tree changes"
+                                Visibility="{Binding IsHistoryView, Converter={StaticResource BoolToVisConverter}}">
+                            <TextBlock Text="{Binding RepoStatus.UncommittedCount, StringFormat='✎ Show Changes ({0})'}"
                                        VerticalAlignment="Center" HorizontalAlignment="Center" />
                         </Button>
                     </Grid>
@@ -984,15 +981,30 @@
                           Background="{DynamicResource BorderBrush}"
                           Cursor="SizeWE" />
 
+            <!-- One-click collapse/expand for the branch sidebar - a full drag-to-zero on the
+                 4px splitter above is fiddly now that it has no minimum width to snap to. -->
+            <Button Grid.Column="1"
+                    Content="◂"
+                    Click="OnToggleBranchSidebarClicked"
+                    Style="{StaticResource PanelToggleButtonStyle}"
+                    VerticalAlignment="Top"
+                    HorizontalAlignment="Center"
+                    Width="18" Height="18"
+                    Padding="0"
+                    FontSize="10"
+                    FontWeight="Bold"
+                    Margin="0,10,0,0"
+                    ToolTip="Collapse/expand the branch sidebar" />
+
             <!-- ================= RIGHT MAIN AREA (VIEW 1: COMMIT HISTORY) ================= -->
             <Grid Grid.Column="2" Visibility="{Binding IsHistoryView, Converter={StaticResource BoolToVisConverter}}">
                 <Grid.RowDefinitions>
                     <!-- Commits History Log (Top) -->
-                    <RowDefinition Height="3*" MinHeight="220" />
+                    <RowDefinition x:Name="CommitListRow" Height="3*" />
                     <!-- Splitter -->
                     <RowDefinition Height="4" />
                     <!-- Commit Detail & Diff (Bottom) -->
-                    <RowDefinition Height="2*" MinHeight="180" />
+                    <RowDefinition Height="2*" />
                 </Grid.RowDefinitions>
 
                 <!-- TOP: COMMITS TABLE WITH COLUMN SEARCH INPUTS -->
@@ -1090,7 +1102,8 @@
                     </Border>
 
                     <!-- Commits DataGrid / ListView -->
-                    <ListView Grid.Row="1"
+                    <ListView x:Name="CommitsListView"
+                              Grid.Row="1"
                               ItemsSource="{Binding CommitHistory.FilteredCommits}"
                               SelectedItem="{Binding CommitHistory.SelectedCommit}"
                               Background="{DynamicResource WindowBackgroundBrush}"
@@ -1108,16 +1121,43 @@
                             <Style TargetType="{x:Type ListViewItem}">
                                 <Setter Property="Opacity" Value="{Binding DisplayOpacity}" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                <Style.Triggers>
-                                    <!-- "You are here" - the commit currently checked out gets a
-                                         persistent tint, on top of which the graph column also
-                                         draws a filled square marker instead of a dot (see
-                                         CommitGraphCanvas). Selecting the row still shows the
-                                         normal selection color on top of this. -->
-                                    <DataTrigger Binding="{Binding IsCurrentHead}" Value="True">
-                                        <Setter Property="Background" Value="{DynamicResource CurrentHeadRowBackgroundBrush}" />
-                                    </DataTrigger>
-                                </Style.Triggers>
+                                <!-- Default ListViewItem template paints selection with the OS/Fluent
+                                     accent color, not this app's theme brushes - against dark mode's
+                                     near-white cell text (TextPrimaryBrush etc.) that read as washed-out,
+                                     barely-visible text. Retemplating with a plain Border, same as
+                                     BranchListBoxItemStyle, so selection uses SelectedBackgroundBrush
+                                     and the per-cell TextBlocks (below) can react to IsSelected too. -->
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="{x:Type ListViewItem}">
+                                            <Border x:Name="border"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Padding="{TemplateBinding Padding}"
+                                                    SnapsToDevicePixels="True">
+                                                <GridViewRowPresenter Content="{TemplateBinding Content}"
+                                                                      Columns="{TemplateBinding GridView.ColumnCollection}" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="{DynamicResource HoverBackgroundBrush}" />
+                                                </Trigger>
+                                                <!-- "You are here" - the commit currently checked out gets a
+                                                     persistent tint, on top of which the graph column also
+                                                     draws a filled square marker instead of a dot (see
+                                                     CommitGraphCanvas). Selecting the row still shows the
+                                                     normal selection color on top of this (declared after,
+                                                     so it wins when both are true). -->
+                                                <DataTrigger Binding="{Binding IsCurrentHead}" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="{DynamicResource CurrentHeadRowBackgroundBrush}" />
+                                                </DataTrigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="{DynamicResource SelectedBackgroundBrush}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
                             </Style>
                         </ListView.ItemContainerStyle>
                         <ListView.ContextMenu>
@@ -1227,9 +1267,19 @@
 
                                                 <!-- Subject Text -->
                                                 <TextBlock Text="{Binding Subject}"
-                                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center" />
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListViewItem}, Path=IsSelected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
                                             </StackPanel>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
@@ -1240,9 +1290,19 @@
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate DataType="{x:Type models:GitCommit}">
                                             <TextBlock Text="{Binding AuthorName}"
-                                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                                        TextTrimming="CharacterEllipsis"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListViewItem}, Path=IsSelected}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
@@ -1252,8 +1312,18 @@
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate DataType="{x:Type models:GitCommit}">
                                             <TextBlock Text="{Binding RelativeDate}"
-                                                       Foreground="{DynamicResource TextMutedBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListViewItem}, Path=IsSelected}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
@@ -1264,8 +1334,18 @@
                                         <DataTemplate DataType="{x:Type models:GitCommit}">
                                             <TextBlock Text="{Binding ShortHash}"
                                                        FontFamily="Consolas, monospace"
-                                                       Foreground="{DynamicResource TextAccentBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource TextAccentBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListViewItem}, Path=IsSelected}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
@@ -1281,15 +1361,30 @@
                               Background="{DynamicResource BorderBrush}"
                               Cursor="SizeNS" />
 
+                <!-- One-click collapse of the commit list, so the detail/diff panel below can
+                     take the full height instantly instead of a fiddly drag-to-zero. -->
+                <Button Grid.Row="1"
+                        Content="▴"
+                        Click="OnToggleCommitListClicked"
+                        Style="{StaticResource PanelToggleButtonStyle}"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Width="18" Height="18"
+                        Padding="0"
+                        FontSize="10"
+                        FontWeight="Bold"
+                        Margin="0,0,10,0"
+                        ToolTip="Collapse/expand the commit list" />
+
                 <!-- BOTTOM: COMMIT DETAILS & DIFF VIEWER -->
                 <Grid Grid.Row="2" Background="{DynamicResource CardBackgroundBrush}">
                     <Grid.ColumnDefinitions>
                         <!-- Changed Files & Metadata (Left) -->
-                        <ColumnDefinition Width="340" MinWidth="240" MaxWidth="500" />
+                        <ColumnDefinition x:Name="ChangedFilesColumn" Width="340" />
                         <!-- Diff Splitter -->
                         <ColumnDefinition Width="4" />
                         <!-- Diff Viewer (Right) -->
-                        <ColumnDefinition Width="*" MinWidth="300" />
+                        <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <!-- Left: Metadata & Files List -->
@@ -1424,6 +1519,20 @@
                                   Background="{DynamicResource BorderBrush}"
                                   Cursor="SizeWE" />
 
+                    <!-- One-click collapse of the changed-files list, for a bigger diff view. -->
+                    <Button Grid.Column="1"
+                            Content="◂"
+                            Click="OnToggleChangedFilesClicked"
+                            Style="{StaticResource PanelToggleButtonStyle}"
+                            VerticalAlignment="Top"
+                            HorizontalAlignment="Center"
+                            Width="18" Height="18"
+                            Padding="0"
+                            FontSize="10"
+                            FontWeight="Bold"
+                            Margin="0,10,0,0"
+                            ToolTip="Collapse/expand the changed files list" />
+
                     <!-- Right: Unified Diff Viewer -->
                     <controls:DiffViewerControl Grid.Column="2"
                                                 DataContext="{Binding CommitDetail}" />
@@ -1434,11 +1543,11 @@
             <Grid Grid.Column="2" Visibility="{Binding IsWorkingChangesView, Converter={StaticResource BoolToVisConverter}}">
                 <Grid.ColumnDefinitions>
                     <!-- Left: Staged & Unstaged Files + Commit Box -->
-                    <ColumnDefinition Width="380" MinWidth="300" MaxWidth="550" />
+                    <ColumnDefinition x:Name="WorkingChangesLeftColumn" Width="380" />
                     <!-- Splitter -->
                     <ColumnDefinition Width="4" />
                     <!-- Right: Working Tree File Diff Viewer -->
-                    <ColumnDefinition Width="*" MinWidth="350" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Left: Staging & Commit Panel -->
@@ -1452,9 +1561,11 @@
                             <!-- Top Navigation / Actions -->
                             <RowDefinition Height="Auto" />
                             <!-- Unstaged Files Group (TOP) -->
-                            <RowDefinition Height="*" MinHeight="100" />
+                            <RowDefinition Height="2*" />
+                            <!-- Splitter -->
+                            <RowDefinition Height="4" />
                             <!-- Staged Files Group (MIDDLE) -->
-                            <RowDefinition Height="Auto" MaxHeight="240" MinHeight="100" />
+                            <RowDefinition x:Name="StagedFilesRow" Height="1*" />
                             <!-- Commit Message Box (BOTTOM) -->
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -1468,7 +1579,21 @@
                                        VerticalAlignment="Center" />
 
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button Content="{Binding WorkingChanges.StashCount, StringFormat='📥 Pop Stash ({0})'}"
+                                <!-- "Stashes (n)" is a plain label for now, not a button - there's
+                                     nowhere for it to navigate to yet (no stash list/management
+                                     window). It's here so the count reads as its own thing rather
+                                     than being folded into "Pop Stash", ahead of that window. -->
+                                <TextBlock Text="{Binding WorkingChanges.StashCount, StringFormat='Stashes ({0})'}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="11"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBlock Text="|"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontSize="11"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <Button Content="📥 Pop Stash"
                                         Style="{StaticResource ToolButtonStyle}"
                                         Command="{Binding WorkingChanges.StashPopCommand}"
                                         IsEnabled="{Binding WorkingChanges.HasStashes}"
@@ -1616,8 +1741,32 @@
                             </Grid>
                         </Border>
 
-                        <!-- STAGED FILES (Row 2 - MIDDLE) -->
-                        <Border Grid.Row="2"
+                        <!-- SPLITTER between Unstaged/Staged - previously the Staged group was a
+                             fixed-height (MaxHeight 240 / inner ListBox MaxHeight 180) region with
+                             no way to resize it, so a firm with many staged files couldn't see
+                             them all. Now a real, unbounded drag like every other split panel. -->
+                        <GridSplitter Grid.Row="2"
+                                      Height="4"
+                                      HorizontalAlignment="Stretch"
+                                      Background="{DynamicResource BorderBrush}"
+                                      Cursor="SizeNS" />
+
+                        <!-- One-click collapse of the Staged group, for a bigger Unstaged view. -->
+                        <Button Grid.Row="2"
+                                Content="▾"
+                                Click="OnToggleStagedFilesClicked"
+                                Style="{StaticResource PanelToggleButtonStyle}"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Width="18" Height="18"
+                                Padding="0"
+                                FontSize="10"
+                                FontWeight="Bold"
+                                Margin="0,0,10,0"
+                                ToolTip="Collapse/expand the staged files list" />
+
+                        <!-- STAGED FILES (Row 3 - MIDDLE) -->
+                        <Border Grid.Row="3"
                                 Background="{DynamicResource WindowBackgroundBrush}"
                                 BorderBrush="{DynamicResource BorderBrush}"
                                 BorderThickness="1"
@@ -1661,8 +1810,7 @@
                                          SelectedItem="{Binding WorkingChanges.SelectedFile}"
                                          SelectionMode="Extended"
                                          Style="{StaticResource ModernListBoxStyle}"
-                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         MaxHeight="180">
+                                         ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
                                             <MenuItem Header="Unstage Selected" Click="OnUnstageSelectedFilesClicked" />
@@ -1736,19 +1884,36 @@
                             </Grid>
                         </Border>
 
-                        <!-- COMMIT MESSAGE BOX & ACTION (Row 3 - BOTTOM) -->
-                        <Border Grid.Row="3"
+                        <!-- COMMIT MESSAGE BOX & ACTION (Row 4 - BOTTOM) -->
+                        <Border Grid.Row="4"
                                 Background="{DynamicResource WindowBackgroundBrush}"
                                 BorderBrush="{DynamicResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6"
                                 Padding="10">
                             <StackPanel>
-                                <TextBlock Text="Commit Message"
-                                           FontWeight="Bold"
-                                           FontSize="11"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,0,6" />
+                                <!-- Header + Stage All - repeated here (not just the Unstaged
+                                     Files group above) since that group can be resized down/out
+                                     of easy reach; staging everything right before writing the
+                                     commit message shouldn't require scrolling back up to find it. -->
+                                <Grid Margin="0,0,0,6">
+                                    <TextBlock Text="Commit Message"
+                                               FontWeight="Bold"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               VerticalAlignment="Center" />
+
+                                    <Button Content="Stage All ⬇"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding WorkingChanges.StageAllCommand}"
+                                            IsEnabled="{Binding WorkingChanges.HasUnstagedFiles}"
+                                            HorizontalAlignment="Right"
+                                            FontWeight="SemiBold"
+                                            Foreground="{DynamicResource TextAccentBrush}"
+                                            FontSize="11"
+                                            Padding="6,2"
+                                            ToolTip="Stage all unstaged files" />
+                                </Grid>
 
                                 <!-- Unified Single Commit Message Box -->
                                 <TextBox Text="{Binding WorkingChanges.CommitMessage, UpdateSourceTrigger=PropertyChanged}"
@@ -1789,6 +1954,20 @@
                               HorizontalAlignment="Stretch"
                               Background="{DynamicResource BorderBrush}"
                               Cursor="SizeWE" />
+
+                <!-- One-click collapse of the staging/commit panel, for a bigger diff view. -->
+                <Button Grid.Column="1"
+                        Content="◂"
+                        Click="OnToggleWorkingChangesLeftClicked"
+                        Style="{StaticResource PanelToggleButtonStyle}"
+                        VerticalAlignment="Top"
+                        HorizontalAlignment="Center"
+                        Width="18" Height="18"
+                        Padding="0"
+                        FontSize="10"
+                        FontWeight="Bold"
+                        Margin="0,10,0,0"
+                        ToolTip="Collapse/expand the staging &amp; commit panel" />
 
                 <!-- Right: Working Tree File Diff Viewer -->
                 <Grid Grid.Column="2" Background="{DynamicResource WindowBackgroundBrush}">
@@ -2676,6 +2855,93 @@
             </Border>
         </Grid>
 
+        <!-- MODAL: PUSH BRANCH NAME MISMATCH - this branch's upstream is a differently-named
+             branch (e.g. a feature branch tracking origin/develop), so a plain `git push` fails
+             with git's own "usage:"-style error instead of doing anything useful. Offers git's
+             own two suggested recovery commands as buttons rather than dumping the raw text. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsPushBranchMismatchDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="480"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="🔀 Branch Name Doesn't Match Upstream"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,8" />
+                    <TextBlock FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,16">
+                        <Run Text="This branch is set to push to " />
+                        <Run Text="{Binding UpstreamBranchShortName, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <Run Text=", which has a different name than your local branch " />
+                        <Run Text="{Binding CurrentBranch, Mode=OneWay}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <Run Text=". Choose where to push." />
+                    </TextBlock>
+
+                    <!-- Push To Upstream Branch Option (git's "git push origin HEAD:<name>") -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,10">
+                        <Button Command="{Binding ConfirmPushToUpstreamBranchCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <Run Text="Push to '" /><Run Text="{Binding UpstreamBranchShortName, Mode=OneWay}" /><Run Text="' (recommended)" />
+                                </TextBlock>
+                                <TextBlock Text="Pushes your commits to the branch already configured as this branch's upstream."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <!-- Push To Same-Name Branch Option (git's "git push origin HEAD") -->
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,0,0,16">
+                        <Button Command="{Binding ConfirmPushToSameNameBranchCommand}"
+                                Style="{StaticResource ToolButtonStyle}"
+                                HorizontalContentAlignment="Left"
+                                Padding="0">
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBlock FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <Run Text="Push to a new branch named '" /><Run Text="{Binding CurrentBranch, Mode=OneWay}" /><Run Text="' instead" />
+                                </TextBlock>
+                                <TextBlock Text="Creates a branch on origin with this branch's own name, and makes that the upstream going forward."
+                                           Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Button>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancel"
+                                Style="{StaticResource StandardButtonStyle}"
+                                Command="{Binding CancelPushBranchMismatchDialogCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <!-- MODAL: SETTINGS -->
         <Grid Grid.Row="0" Grid.RowSpan="3"
               Background="#80000000"
@@ -2732,6 +2998,76 @@
                                       Foreground="{DynamicResource TextPrimaryBrush}"
                                       Margin="0,0,0,6"
                                       ToolTip="The small chevron next to a folder always toggles on one click regardless of this setting - this only controls clicking the folder row itself." />
+
+                            <TextBlock Text="DIAGNOSTICS" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
+                            <CheckBox Content="Log every git command's timing (not just slow ones)"
+                                      IsChecked="{Binding Settings.EnableTimingLogs}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,6"
+                                      ToolTip="Exceptions and any command slow enough to feel like lag are always logged regardless of this setting - this only adds a line for every single git call, useful when actively chasing a performance issue." />
+                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" Margin="0,0,0,6" TextWrapping="Wrap">
+                                <Run Text="Log file: " /><Run Text="{Binding Settings.LogFilePath, Mode=OneWay}" FontFamily="Consolas, monospace" />
+                            </TextBlock>
+
+                            <TextBlock Text="SUPPORTING APPS" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
+                            <TextBlock Text="Merge tool - used by &quot;Open In Merge Tool&quot; when resolving conflicts. git already knows the right command line for each of these; pick one or type any other name git supports."
+                                       FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,0,0,6" />
+
+                            <ItemsControl ItemsSource="{Binding Settings.KnownMergeTools}" Margin="0,0,0,8">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Content="{Binding}"
+                                                Style="{StaticResource ToolButtonStyle}"
+                                                Command="{Binding DataContext.Settings.SetMergeToolPresetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                FontSize="11"
+                                                Padding="8,3"
+                                                Margin="0,0,6,6" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBox Text="{Binding Settings.MergeToolName, UpdateSourceTrigger=PropertyChanged}"
+                                     Padding="6,4"
+                                     Margin="0,0,0,6"
+                                     Background="{DynamicResource CardBackgroundBrush}"
+                                     Foreground="{DynamicResource TextPrimaryBrush}"
+                                     BorderBrush="{DynamicResource BorderBrush}"
+                                     ToolTip="Tool name as git knows it (merge.tool) - one of the buttons above, or any other name from 'git mergetool --tool-help'." />
+
+                            <TextBlock Text="Executable path (only needed if it's not already on PATH)"
+                                       FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Margin="0,0,6,0" Padding="6,4"
+                                         Text="{Binding Settings.MergeToolPath, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="{DynamicResource CardBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}" />
+                                <Button Grid.Column="1" Content="Browse..."
+                                        Style="{StaticResource ToolButtonStyle}"
+                                        Command="{Binding Settings.BrowseForMergeToolPathCommand}" />
+                            </Grid>
+
+                            <Button Content="Save Merge Tool"
+                                    Style="{StaticResource ToolButtonStyle}"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,0,0,6"
+                                    Command="{Binding Settings.SaveMergeToolCommand}" />
+                            <TextBlock Text="{Binding Settings.MergeToolStatusMessage}"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextAccentBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,6"
+                                       Visibility="{Binding Settings.MergeToolStatusMessage, Converter={StaticResource NullToVisConverter}}" />
 
                             <TextBlock Text="GIT IDENTITY" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
 

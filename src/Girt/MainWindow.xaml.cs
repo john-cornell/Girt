@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -38,6 +39,12 @@ namespace Girt
             // MinimizeToTray/MinimizeOnClose live on _viewModel.Settings (shared with the
             // Settings dialog) - mirror changes into the tray menu's checkmarks either way.
             _viewModel.Settings.PropertyChanged += OnSettingsPropertyChanged;
+
+            // SelectedCommit's binding to ListView.SelectedItem highlights the row but a
+            // virtualized ListView never auto-scrolls to a selection made in code (only to one
+            // made by clicking) - without this, selecting a branch far down a long history
+            // updates SelectedCommit but the graph visibly doesn't move.
+            _viewModel.CommitHistory.PropertyChanged += OnCommitHistoryPropertyChanged;
 
             InitializeTrayIcon();
             StateChanged += OnWindowStateChanged;
@@ -98,6 +105,15 @@ namespace Girt
                 case nameof(SettingsViewModel.MinimizeOnClose):
                     if (_minimizeOnCloseMenuItem != null) _minimizeOnCloseMenuItem.Checked = _viewModel.Settings.MinimizeOnClose;
                     break;
+            }
+        }
+
+        private void OnCommitHistoryPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(CommitHistoryViewModel.SelectedCommit) &&
+                _viewModel.CommitHistory.SelectedCommit is { } commit)
+            {
+                CommitsListView.ScrollIntoView(commit);
             }
         }
 
@@ -416,5 +432,58 @@ namespace Girt
             }
             return parent as TreeViewItem;
         }
+
+        // One-click collapse/expand for the split panels (branch sidebar, commit list/detail,
+        // changed-files/diff, working-changes left panel, unstaged/staged) - now that dragging
+        // has no min/max limits, a full collapse via drag means hunting for a 0px-wide splitter.
+        // Keyed by the DefinitionBase instance itself so multiple panels can share one dictionary.
+        private readonly Dictionary<DefinitionBase, GridLength> _collapsedPanelSizes = new();
+
+        private void ToggleColumnCollapse(ColumnDefinition column, Button toggleButton, string expandedGlyph, string collapsedGlyph)
+        {
+            if (_collapsedPanelSizes.TryGetValue(column, out var saved))
+            {
+                column.Width = saved;
+                _collapsedPanelSizes.Remove(column);
+                toggleButton.Content = expandedGlyph;
+            }
+            else
+            {
+                _collapsedPanelSizes[column] = column.Width;
+                column.Width = new GridLength(0);
+                toggleButton.Content = collapsedGlyph;
+            }
+        }
+
+        private void ToggleRowCollapse(RowDefinition row, Button toggleButton, string expandedGlyph, string collapsedGlyph)
+        {
+            if (_collapsedPanelSizes.TryGetValue(row, out var saved))
+            {
+                row.Height = saved;
+                _collapsedPanelSizes.Remove(row);
+                toggleButton.Content = expandedGlyph;
+            }
+            else
+            {
+                _collapsedPanelSizes[row] = row.Height;
+                row.Height = new GridLength(0);
+                toggleButton.Content = collapsedGlyph;
+            }
+        }
+
+        private void OnToggleBranchSidebarClicked(object sender, RoutedEventArgs e) =>
+            ToggleColumnCollapse(BranchSidebarColumn, (Button)sender, "◂", "▸");
+
+        private void OnToggleCommitListClicked(object sender, RoutedEventArgs e) =>
+            ToggleRowCollapse(CommitListRow, (Button)sender, "▴", "▾");
+
+        private void OnToggleChangedFilesClicked(object sender, RoutedEventArgs e) =>
+            ToggleColumnCollapse(ChangedFilesColumn, (Button)sender, "◂", "▸");
+
+        private void OnToggleWorkingChangesLeftClicked(object sender, RoutedEventArgs e) =>
+            ToggleColumnCollapse(WorkingChangesLeftColumn, (Button)sender, "◂", "▸");
+
+        private void OnToggleStagedFilesClicked(object sender, RoutedEventArgs e) =>
+            ToggleRowCollapse(StagedFilesRow, (Button)sender, "▾", "▴");
     }
 }
