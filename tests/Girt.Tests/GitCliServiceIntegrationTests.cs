@@ -42,6 +42,64 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task IsCommandInFlight_TrueWhileRunning_FalseOnceDoneEvenOnFailure()
+        {
+            // RunGitCommandAsync bumps the counter before its first await, so the flag is
+            // already set by the time the call hands back its (still running) task - git.exe
+            // can't have started and exited in that time.
+            var running = _gitService.GetCurrentBranchAsync(_testRepoPath);
+            Assert.True(_gitService.IsCommandInFlight);
+            await running;
+            Assert.False(_gitService.IsCommandInFlight);
+
+            // A failing run (git launches, then exits non-zero) must release it too.
+            await _gitService.GetCurrentBranchAsync(Path.Combine(_testRepoPath, "does-not-exist"));
+            Assert.False(_gitService.IsCommandInFlight);
+        }
+
+        [Fact]
+        public async Task EnsureFastStatusConfigAsync_FillsUnsetValues_ButRespectsExplicitOptOut()
+        {
+            RunGit("config core.fsmonitor false");
+
+            await _gitService.EnsureFastStatusConfigAsync(_testRepoPath);
+
+            Assert.Equal("false", await _gitService.GetGitConfigValueAsync(_testRepoPath, "core.fsmonitor", global: false));
+            Assert.Equal("true", await _gitService.GetGitConfigValueAsync(_testRepoPath, "core.untrackedCache", global: false));
+        }
+
+        [Fact]
+        public async Task GetIgnoredDirectoryNamesAsync_ReportsOnlyNamesThisRepoIgnores()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, ".gitignore"), "[Bb]in/\nobj/\n");
+
+            var ignored = await _gitService.GetIgnoredDirectoryNamesAsync(_testRepoPath, new[] { "bin", "obj", "packages" });
+
+            Assert.Contains("bin", ignored);
+            Assert.Contains("obj", ignored);
+            Assert.DoesNotContain("packages", ignored);
+        }
+
+        [Fact]
+        public async Task GetRefsFingerprintAsync_ChangesOnStashEvenThoughNoBranchMoved()
+        {
+            var file = Path.Combine(_testRepoPath, "a.txt");
+            File.WriteAllText(file, "one");
+            RunGit("add a.txt");
+            RunGit("commit -m \"Initial\"");
+
+            var before = await _gitService.GetRefsFingerprintAsync(_testRepoPath);
+            Assert.Contains("HEAD", before);
+
+            File.WriteAllText(file, "two");
+            RunGit("stash");
+
+            var after = await _gitService.GetRefsFingerprintAsync(_testRepoPath);
+            Assert.NotEqual(before, after);
+            Assert.Contains("refs/stash", after);
+        }
+
+        [Fact]
         public async Task GitCliService_CanRetrieveBranchesCommitsAndDiff()
         {
             // 1. Create Initial Commit

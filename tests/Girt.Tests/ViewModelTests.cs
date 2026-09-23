@@ -25,10 +25,23 @@ namespace Girt.Tests
         public string? LastCommitMessage { get; set; }
         public bool FetchAllCalled { get; set; }
         public DateTime LastCommandCompletedUtc { get; set; } = DateTime.MinValue;
+        public bool IsCommandInFlight { get; set; }
 
         public Task<string?> GetRepositoryRootAsync(string directoryPath) => Task.FromResult(RepoRoot);
+        public bool EnsureFastStatusConfigCalled { get; set; }
+        public Task EnsureFastStatusConfigAsync(string repoPath) { EnsureFastStatusConfigCalled = true; return Task.CompletedTask; }
+        public string RefsFingerprint { get; set; } = string.Empty;
+        public Task<string> GetRefsFingerprintAsync(string repoPath) => Task.FromResult(RefsFingerprint);
+        public HashSet<string> IgnoredDirectoryNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Task<IReadOnlySet<string>> GetIgnoredDirectoryNamesAsync(string repoPath, IEnumerable<string> directoryNames)
+            => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(directoryNames.Where(IgnoredDirectoryNames.Contains), StringComparer.OrdinalIgnoreCase));
         public Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitBranch>>(Branches);
-        public Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000) => Task.FromResult<IReadOnlyList<GitCommit>>(Commits);
+        public int GetCommitsCallCount { get; set; }
+        public Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000)
+        {
+            GetCommitsCallCount++;
+            return Task.FromResult<IReadOnlyList<GitCommit>>(Commits);
+        }
         public Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash) => Task.FromResult<IReadOnlyList<GitFileDiff>>(DiffFiles);
         public bool? LastRequestedIgnoreWhitespace { get; set; }
         public string? LastDiffAgainstRef { get; set; }
@@ -642,6 +655,83 @@ namespace Girt.Tests
             await vm.LoadBranchesAsync();
             Assert.Single(vm.NewBranches);
             Assert.Equal("feature/actually-new", vm.NewBranches[0].Name);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_PrependLocalCommitAsync_FallsBackToFullRelayoutWhenNotASimpleContinuation()
+        {
+            var c1 = new GitCommit { Hash = "c1", Subject = "Commit 1" };
+            var branches = new List<GitBranch> { new() { Name = "main", FullName = "refs/heads/main", TipCommitHash = "c1" } };
+            var fakeGit = new FakeGitService { Commits = new List<GitCommit> { c1 }, Branches = branches };
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            vm.SetBranches(branches, "main");
+            await vm.LoadCommitsAsync();
+
+            // A commit with no parent at all can't be "the previous top commit's child" - the
+            // cheap fast-path verification in TryBuildIncrementalCommitList can't hold, forcing
+            // the full-relayout fallback that used to run synchronously on the UI thread (the
+            // freeze this was fixed for). The result should still come out correct.
+            var unrelatedRoot = new GitCommit { Hash = "unrelated-root", Subject = "Unrelated root", ParentHashes = new List<string>() };
+            await vm.PrependLocalCommitAsync(unrelatedRoot);
+
+            Assert.Equal("unrelated-root", vm.FilteredCommits[0].Hash);
+            Assert.Equal("c1", vm.FilteredCommits[1].Hash);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_AllowSkipIfUnchanged_SkipsReloadOnlyWhenRefsFingerprintMatches()
+        {
+            var c1 = new GitCommit { Hash = "c1", Subject = "Commit 1" };
+            var fakeGit = new FakeGitService { Commits = new List<GitCommit> { c1 } };
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+
+            await vm.LoadCommitsAsync("main\nc1 HEAD\nc1 refs/heads/main", allowSkipIfUnchanged: true);
+            Assert.Equal(1, fakeGit.GetCommitsCallCount);
+
+            // Identical snapshot - nothing `git log --all` starts from moved, so no log walk.
+            await vm.LoadCommitsAsync("main\nc1 HEAD\nc1 refs/heads/main", allowSkipIfUnchanged: true);
+            Assert.Equal(1, fakeGit.GetCommitsCallCount);
+
+            // A new stash (or tag) changes the snapshot without moving any branch - must reload,
+            // since `--all` includes refs/stash and refs/tags.
+            await vm.LoadCommitsAsync("main\nc1 HEAD\nc1 refs/heads/main\ns1 refs/stash", allowSkipIfUnchanged: true);
+            Assert.Equal(2, fakeGit.GetCommitsCallCount);
+
+            // Switched to another branch at the same commit - only the branch-name part differs,
+            // which still has to reload so the graph's HEAD label moves.
+            await vm.LoadCommitsAsync("other\nc1 HEAD\nc1 refs/heads/main\ns1 refs/stash", allowSkipIfUnchanged: true);
+            Assert.Equal(3, fakeGit.GetCommitsCallCount);
+
+            // Unknown snapshot (the refs call failed) never skips.
+            await vm.LoadCommitsAsync(null, allowSkipIfUnchanged: true);
+            await vm.LoadCommitsAsync(null, allowSkipIfUnchanged: true);
+            Assert.Equal(5, fakeGit.GetCommitsCallCount);
+
+            // F5 (allowSkipIfUnchanged: false) always reloads, but still records the snapshot
+            // so the next background refresh can skip.
+            await vm.LoadCommitsAsync("main\nc1 HEAD", allowSkipIfUnchanged: false);
+            Assert.Equal(6, fakeGit.GetCommitsCallCount);
+            await vm.LoadCommitsAsync("main\nc1 HEAD", allowSkipIfUnchanged: true);
+            Assert.Equal(6, fakeGit.GetCommitsCallCount);
+        }
+
+        [Fact]
+        public async Task CommitHistoryViewModel_PrependLocalCommitAsync_AfterReloadAlreadyIncludedIt_DoesNotDuplicate()
+        {
+            var c1 = new GitCommit { Hash = "c1", Subject = "Commit 1" };
+            var fakeGit = new FakeGitService { Commits = new List<GitCommit> { c1 } };
+            var vm = new CommitHistoryViewModel(fakeGit, () => @"C:\FakeRepo", _ => { });
+            await vm.LoadCommitsAsync();
+
+            // A background reload lands first and already picks up the new commit...
+            var c2 = new GitCommit { Hash = "c2", ParentHashes = new List<string> { "c1" }, Subject = "Commit 2" };
+            fakeGit.Commits = new List<GitCommit> { c2, c1 };
+            await vm.LoadCommitsAsync();
+
+            // ...then the commit's own splice runs with the same commit - must be a no-op.
+            await vm.PrependLocalCommitAsync(new GitCommit { Hash = "c2", ParentHashes = new List<string> { "c1" }, Subject = "Commit 2" });
+
+            Assert.Equal(new[] { "c2", "c1" }, vm.FilteredCommits.Select(c => c.Hash).ToArray());
         }
 
         [Fact]
@@ -1267,6 +1357,19 @@ namespace Girt.Tests
             Assert.Contains(MainViewModel.AppVersion, mainVm.WindowTitle);
             Assert.Contains("MyProject", mainVm.WindowTitle);
             Assert.Contains("feature/test", mainVm.WindowTitle);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OpenRepository_EnablesFastStatusConfig()
+        {
+            var fakeGit = new FakeGitService { RepoRoot = @"C:\FakeRepo" };
+            var recentService = new RecentRepositoriesService();
+            var themeService = CreateIsolatedThemeService();
+            var mainVm = new MainViewModel(fakeGit, recentService, themeService);
+
+            await mainVm.OpenRepositoryAsync(@"C:\FakeRepo");
+
+            Assert.True(fakeGit.EnsureFastStatusConfigCalled);
         }
 
         [Fact]

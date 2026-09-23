@@ -48,6 +48,69 @@ namespace Girt.Services
             return null;
         }
 
+        // Large repos (tens of thousands of tracked files) make git's default full-tree stat
+        // walk slow enough that re-running status on every file-watcher tick is visible as the
+        // whole PC struggling. Both settings below are git's own built-in caches: the untracked
+        // cache remembers which directories are clean so it skips re-scanning them, and
+        // fsmonitor lets git ask the OS what changed instead of stat-ing every tracked file
+        // itself. Neither is on by default and both are safe no-ops on small repos.
+        //
+        // Only fills in a setting that's entirely unset (at any scope) - an explicit
+        // `core.fsmonitor false` anywhere is the user opting out, and is left alone. Note that
+        // fsmonitor affects every tool using this repo and keeps a small background git daemon
+        // running per repo, which is why an explicit opt-out has to win.
+        public async Task EnsureFastStatusConfigAsync(string repoPath)
+        {
+            if (string.IsNullOrWhiteSpace(repoPath)) return;
+
+            var (_, output, _) = await RunGitCommandAsync(repoPath, "config --get-regexp \"^core\\.(fsmonitor|untrackedcache)$\"").ConfigureAwait(false);
+            var alreadySet = output
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Split(' ', 2)[0].Trim().ToLowerInvariant())
+                .ToHashSet();
+
+            if (!alreadySet.Contains("core.fsmonitor"))
+            {
+                await SetGitConfigValueAsync(repoPath, "core.fsmonitor", "true", global: false).ConfigureAwait(false);
+            }
+            if (!alreadySet.Contains("core.untrackedcache"))
+            {
+                await SetGitConfigValueAsync(repoPath, "core.untrackedCache", "true", global: false).ConfigureAwait(false);
+            }
+        }
+
+        // `show-ref --head` lists HEAD plus every ref (heads, remotes, tags, stash) with its
+        // hash in one cheap call that reads ref files only, no history walk - i.e. everything
+        // `git log --all` starts from. If this output is unchanged, the commit graph can't
+        // have changed either. Empty on failure, which callers treat as "unknown, don't skip".
+        public async Task<string> GetRefsFingerprintAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "show-ref --head").ConfigureAwait(false);
+            return success ? output.Trim() : string.Empty;
+        }
+
+        // Asks git (one process) which of the given directory names its ignore rules would
+        // exclude, by probing a made-up path under each - check-ignore matches patterns without
+        // needing the path to exist. Lets the file watcher skip e.g. a gitignored NuGet
+        // `packages/` folder while still watching a tracked JS-monorepo `packages/` folder.
+        // Root-level rules only; a pattern that exists solely in a nested .gitignore isn't seen.
+        public async Task<IReadOnlySet<string>> GetIgnoredDirectoryNamesAsync(string repoPath, IEnumerable<string> directoryNames)
+        {
+            const string probeRoot = "__girt_ignore_probe__";
+            var names = directoryNames.ToList();
+            var args = string.Join(" ", names.Select(n => $"\"{probeRoot}/{n}/probe\""));
+
+            // Exit code 1 just means "nothing matched" - the output is still correct to parse.
+            var (_, output, _) = await RunGitCommandAsync(repoPath, $"check-ignore {args}").ConfigureAwait(false);
+            var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = line.Trim().Split('/');
+                if (parts.Length == 3 && parts[0] == probeRoot) ignored.Add(parts[1]);
+            }
+            return ignored;
+        }
+
         public async Task<GitRepoStatus> GetRepoStatusAsync(string repoPath)
         {
             var status = new GitRepoStatus();
@@ -56,6 +119,12 @@ namespace Girt.Services
             // Each of these is a separate git.exe process spawn, which has real wall-clock
             // overhead on top of whatever it actually computes - status and the upstream check
             // are independent, so run them concurrently rather than one after another.
+            //
+            // -uall on purpose, matching GetWorkingTreeChangesAsync: the pill's count is also
+            // recomputed locally from the Working Changes file list (UpdateRepoStatusLocally),
+            // which counts every untracked file individually - without -uall here an untracked
+            // folder counts as 1 and the pill flips between two different numbers depending on
+            // which path updated it last. With untrackedCache enabled the extra cost is small.
             var statusTask = RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall");
             var upstreamTask = RunGitCommandAsync(repoPath, "rev-parse --abbrev-ref @{u}");
             await Task.WhenAll(statusTask, upstreamTask).ConfigureAwait(false);
@@ -505,7 +574,10 @@ namespace Girt.Services
         public async Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath)
         {
             var conflicts = new List<MergeConflictFile>();
-            var (success, output, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1 -uall").ConfigureAwait(false);
+            // Conflicts are always tracked-file states (UU/AA/DD/AU/UA/DU/UD) - they never show
+            // up as untracked "??" lines, so -uall's expensive per-file untracked recursion buys
+            // nothing here and can be dropped for the same reason as GetRepoStatusAsync.
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "status --porcelain=v1").ConfigureAwait(false);
             if (!success || string.IsNullOrWhiteSpace(output)) return conflicts;
 
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -1012,9 +1084,19 @@ namespace Girt.Services
         private static DateTime _lastCommandCompletedUtc = DateTime.MinValue;
         public DateTime LastCommandCompletedUtc => _lastCommandCompletedUtc;
 
+        // git writes HEAD/index/refs progressively as it runs, well before the process actually
+        // exits - a slow command (git commit on a big repo can take multiple seconds) leaves a
+        // real window where the file watchers see those writes while LastCommandCompletedUtc
+        // still holds the *previous* command's timestamp, so "was this our own write" would
+        // wrongly say no and let a background refresh race the still-running command. Tracking
+        // in-flight count closes that window regardless of which command or how long it runs.
+        private static int _inFlightCommandCount;
+        public bool IsCommandInFlight => Volatile.Read(ref _inFlightCommandCount) > 0;
+
         private static async Task<(bool Success, string Output, string Error)> RunGitCommandAsync(string workingDirectory, string arguments)
         {
             var stopwatch = Stopwatch.StartNew();
+            Interlocked.Increment(ref _inFlightCommandCount);
             try
             {
                 // Win32's CreateProcess (which Process.Start uses under the hood) doesn't accept
@@ -1066,6 +1148,10 @@ namespace Girt.Services
                 _lastCommandCompletedUtc = DateTime.UtcNow;
                 LogService.Error($"git {arguments} threw", ex);
                 return (false, string.Empty, ex.Message);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _inFlightCommandCount);
             }
         }
     }

@@ -338,6 +338,11 @@ namespace Girt.ViewModels
                 RepositoryName = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 _recentReposService.AddRepository(root);
                 LoadRecentRepositories();
+                var ensureConfigTask = _gitService.EnsureFastStatusConfigAsync(root);
+                var ignoredDirsTask = _gitService.GetIgnoredDirectoryNamesAsync(root, CandidateNoisyDirNames);
+                await Task.WhenAll(ensureConfigTask, ignoredDirsTask);
+                _ignoredNoisyDirNames = await ignoredDirsTask;
+
                 StartWatchingGitState(root);
                 StartWatchingWorkingTree(root);
 
@@ -407,20 +412,55 @@ namespace Girt.ViewModels
             }
             _gitStateWatchers.Clear();
 
-            _gitStateDebounceTimer?.Dispose();
-            _gitStateDebounceTimer = null;
+            lock (_debounceLock)
+            {
+                _gitStateDebounceTimer?.Dispose();
+                _gitStateDebounceTimer = null;
+            }
         }
+
+        // FileSystemWatcher raises events on thread-pool threads, several at once during a
+        // burst - without a lock two of them can each dispose the "current" timer and create
+        // their own, leaving an orphaned timer that still fires.
+        private readonly object _debounceLock = new();
 
         private void OnGitStateFileChanged(object sender, FileSystemEventArgs e)
         {
-            _gitStateDebounceTimer?.Dispose();
-            _gitStateDebounceTimer = new Timer(_ =>
+            lock (_debounceLock)
             {
-                // FileSystemWatcher raises events on a ThreadPool thread; ObservableProperty
-                // setters must run on the UI thread.
-                Application.Current?.Dispatcher.InvokeAsync(async () =>
+                _gitStateDebounceTimer?.Dispose();
+                // ObservableProperty setters must run on the UI thread.
+                _gitStateDebounceTimer = new Timer(
+                    _ => Application.Current?.Dispatcher.InvokeAsync(RunGitStateRefreshAsync),
+                    null, dueTime: 300, period: Timeout.Infinite);
+            }
+        }
+
+        private bool _isGitStateRefreshInFlight;
+        private bool _gitStateRefreshPending;
+
+        private async Task RunGitStateRefreshAsync()
+        {
+            // Checked first on purpose: git status itself can rewrite .git/index (untracked
+            // cache / stat refresh), so events that land while Girt's own command is running
+            // look exactly like an external change. Treating them as pending would make every
+            // refresh schedule another one, forever.
+            if (IsLoading || JustRanOwnGitCommand()) return;
+
+            // A change that lands between git calls of a refresh that's already running (e.g.
+            // during its graph layout) is queued for one more pass instead of being dropped.
+            if (_isGitStateRefreshInFlight)
+            {
+                _gitStateRefreshPending = true;
+                return;
+            }
+
+            _isGitStateRefreshInFlight = true;
+            try
+            {
+                do
                 {
-                    if (IsLoading || JustRanOwnGitCommand()) return;
+                    _gitStateRefreshPending = false;
 
                     // Something external changed .git - AutoRefresh decides how much to react:
                     // off (default), only the pills (ahead/behind/uncommitted/current branch)
@@ -434,8 +474,13 @@ namespace Girt.ViewModels
                     {
                         await RefreshPillsOnlyAsync();
                     }
-                });
-            }, null, dueTime: 300, period: Timeout.Infinite);
+                }
+                while (_gitStateRefreshPending && !IsLoading);
+            }
+            finally
+            {
+                _isGitStateRefreshInFlight = false;
+            }
         }
 
         // Stage/unstage/commit/etc. all write to .git/index (and sometimes refs), which this
@@ -443,9 +488,16 @@ namespace Girt.ViewModels
         // triggered a full extra RefreshRepositoryAsync on top of the operation's own already-
         // correct, lightweight update, because those quick actions don't set IsLoading. A recent
         // git command from GitCliService means the write almost certainly came from Girt itself.
+        // IsCommandInFlight closes a real race on a slow command (git commit on a big repo can
+        // take several seconds): git writes HEAD/index/refs well before the process exits, so a
+        // watcher event can fire - and this check can run - while the command that caused it is
+        // still running, before LastCommandCompletedUtc gets stamped. Without this, a background
+        // refresh could fire mid-commit and race the commit's own post-success graph splice
+        // (CommitHistory.PrependLocalCommitAsync), corrupting _allCommits with a duplicate entry.
         private bool JustRanOwnGitCommand()
         {
-            return DateTime.UtcNow - _gitService.LastCommandCompletedUtc < TimeSpan.FromMilliseconds(1000);
+            return _gitService.IsCommandInFlight
+                || DateTime.UtcNow - _gitService.LastCommandCompletedUtc < TimeSpan.FromMilliseconds(1000);
         }
 
         private FileSystemWatcher? _workingTreeWatcher;
@@ -460,6 +512,7 @@ namespace Girt.ViewModels
             StopWatchingWorkingTree();
             if (!Directory.Exists(repoRoot)) return;
 
+            _workingTreeRoot = repoRoot;
             _workingTreeWatcher = new FileSystemWatcher(repoRoot)
             {
                 IncludeSubdirectories = true,
@@ -485,40 +538,96 @@ namespace Girt.ViewModels
                 _workingTreeWatcher = null;
             }
 
-            _workingTreeDebounceTimer?.Dispose();
-            _workingTreeDebounceTimer = null;
+            lock (_debounceLock)
+            {
+                _workingTreeDebounceTimer?.Dispose();
+                _workingTreeDebounceTimer = null;
+            }
         }
+
+        // Build/restore output directories - a rebuild or NuGet restore can be thousands of
+        // file touches in seconds on a big solution, each one otherwise a reason to re-run git
+        // status. Only the ones git actually ignores in this repo get skipped (asked once, on
+        // open, via GetIgnoredDirectoryNamesAsync) - so a tracked JS-monorepo `packages/` or a
+        // tracked `bin/` scripts folder is still watched, while a gitignored NuGet `packages/`
+        // isn't.
+        private static readonly string[] CandidateNoisyDirNames =
+        {
+            "bin", "obj", "node_modules", "packages", ".vs", "TestResults"
+        };
+
+        private IReadOnlySet<string> _ignoredNoisyDirNames = new HashSet<string>();
+        private string _workingTreeRoot = string.Empty;
+
+        // Only looks at the path *below* the repo root - a repo that itself lives under e.g.
+        // C:\packages\... or ...\bin\... would otherwise have every single event ignored.
+        private bool ShouldIgnoreWorkingTreeEvent(string fullPath)
+        {
+            var relative = Path.GetRelativePath(_workingTreeRoot, fullPath);
+            foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                // .git's own churn (objects, logs, index, lock files) fires constantly during
+                // any git operation and is already covered by the git-state watcher above.
+                if (string.Equals(segment, ".git", StringComparison.OrdinalIgnoreCase)) return true;
+                if (_ignoredNoisyDirNames.Contains(segment)) return true;
+            }
+            return false;
+        }
+
+        private bool _isWorkingTreeRefreshInFlight;
+        private bool _workingTreeRefreshPending;
 
         private void OnWorkingTreeFileChanged(object sender, FileSystemEventArgs e)
         {
-            // .git's own churn (objects, logs, index, lock files) fires constantly during any
-            // git operation and is already covered by the git-state watcher above - ignore it
-            // here so the same change doesn't trigger two separate refresh paths.
-            var sep = Path.DirectorySeparatorChar;
-            if (e.FullPath.Contains($"{sep}.git{sep}") || e.FullPath.EndsWith($"{sep}.git"))
+            if (ShouldIgnoreWorkingTreeEvent(e.FullPath)) return;
+
+            lock (_debounceLock)
             {
+                _workingTreeDebounceTimer?.Dispose();
+                _workingTreeDebounceTimer = new Timer(
+                    _ => Application.Current?.Dispatcher.InvokeAsync(RunWorkingTreeRefreshAsync),
+                    null, dueTime: 400, period: Timeout.Infinite);
+            }
+        }
+
+        private async Task RunWorkingTreeRefreshAsync()
+        {
+            if (IsLoading || !IsWorkingChangesView) return;
+
+            // Checked before JustRanOwnGitCommand on purpose: the refresh's own git status call
+            // never writes working-tree files (only .git, which is filtered out above), so an
+            // edit that lands while it's running is a genuine outside change - queue one more
+            // pass rather than letting "a command is in flight" swallow it.
+            if (_isWorkingTreeRefreshInFlight)
+            {
+                _workingTreeRefreshPending = true;
                 return;
             }
 
-            _workingTreeDebounceTimer?.Dispose();
-            _workingTreeDebounceTimer = new Timer(_ =>
-            {
-                Application.Current?.Dispatcher.InvokeAsync(async () =>
-                {
-                    if (!IsLoading && IsWorkingChangesView && !JustRanOwnGitCommand())
-                    {
-                        await WorkingChanges.LoadChangesAsync();
+            if (JustRanOwnGitCommand()) return;
 
-                        // LoadChangesAsync only refreshes WorkingChanges' own StagedFiles/
-                        // UnstagedFiles - without this, editing a file externally (another
-                        // editor, a build step) while looking at this tab updated the file list
-                        // correctly but left the toolbar's "N to commit" pill (RepoStatus.
-                        // UncommittedCount) showing whatever it was before, e.g. "0 to commit"
-                        // next to a panel full of real unstaged files.
-                        UpdateRepoStatusLocally(aheadDelta: 0);
-                    }
-                });
-            }, null, dueTime: 400, period: Timeout.Infinite);
+            _isWorkingTreeRefreshInFlight = true;
+            try
+            {
+                do
+                {
+                    _workingTreeRefreshPending = false;
+                    await WorkingChanges.LoadChangesAsync();
+
+                    // LoadChangesAsync only refreshes WorkingChanges' own StagedFiles/
+                    // UnstagedFiles - without this, editing a file externally (another
+                    // editor, a build step) while looking at this tab updated the file list
+                    // correctly but left the toolbar's "N to commit" pill (RepoStatus.
+                    // UncommittedCount) showing whatever it was before, e.g. "0 to commit"
+                    // next to a panel full of real unstaged files.
+                    UpdateRepoStatusLocally(aheadDelta: 0);
+                }
+                while (_workingTreeRefreshPending && !IsLoading && IsWorkingChangesView);
+            }
+            finally
+            {
+                _isWorkingTreeRefreshInFlight = false;
+            }
         }
 
         // Set only around refreshes the user explicitly asked for (F5, or as part of a longer
@@ -536,7 +645,9 @@ namespace Girt.ViewModels
 
             try
             {
-                await DoRefreshRepositoryAsync();
+                // An explicit F5 is the user's "no, really, show me the real state" escape hatch -
+                // always do the full commit reload rather than trusting the branch-tips fingerprint.
+                await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: false);
             }
             catch (Exception ex)
             {
@@ -555,7 +666,11 @@ namespace Girt.ViewModels
             IsBackgroundBusy = true;
             try
             {
-                await DoRefreshRepositoryAsync();
+                // A silent background refresh is triggered by *something* in .git changing, but
+                // that isn't always something reachable from `git log --all` (a stash push, a
+                // config write) - let it skip the expensive log walk and relayout when the
+                // branch tips genuinely haven't moved.
+                await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: true);
             }
             catch
             {
@@ -574,10 +689,14 @@ namespace Girt.ViewModels
         // the branch list) accurate with 2-3 git calls instead of the full multi-part refresh.
         // The commit graph itself is the one thing left stale until F5 or AutoRefresh for these
         // specific actions - Commit and Revert are handled separately since a single new commit
-        // *can* be spliced in locally (see CommitHistory.PrependLocalCommit).
+        // *can* be spliced in locally (see CommitHistory.PrependLocalCommitAsync).
+        // Deliberately doesn't set IsBackgroundBusy: that drives the visible "working"
+        // indicator, which is meant for a real background sync, not a quick pill update.
+        // Re-entrancy is handled by the caller (RunGitStateRefreshAsync).
         private async Task RefreshPillsOnlyAsync()
         {
             if (string.IsNullOrEmpty(RepositoryPath)) return;
+
             try
             {
                 var statusTask = _gitService.GetRepoStatusAsync(RepositoryPath);
@@ -624,19 +743,27 @@ namespace Girt.ViewModels
             }
         }
 
-        private async Task DoRefreshRepositoryAsync()
+        private async Task DoRefreshRepositoryAsync(bool allowSkipUnchangedCommits)
         {
             var branchTask = _gitService.GetCurrentBranchAsync(RepositoryPath);
             var statusTask = _gitService.GetRepoStatusAsync(RepositoryPath);
             var branchListTask = BranchList.LoadBranchesAsync();
             var workingChangesTask = WorkingChanges.LoadChangesAsync();
+            // Runs alongside the others, so it adds no wall-clock time to the refresh.
+            var refsTask = _gitService.GetRefsFingerprintAsync(RepositoryPath);
 
-            await Task.WhenAll(branchTask, statusTask, branchListTask, workingChangesTask);
+            await Task.WhenAll(branchTask, statusTask, branchListTask, workingChangesTask, refsTask);
 
             CurrentBranch = await branchTask ?? "-";
             RepoStatus = await statusTask;
             CommitHistory.SetBranches(BranchList.AllBranches, CurrentBranch);
-            await CommitHistory.LoadCommitsAsync();
+
+            // show-ref gives HEAD's hash but not which branch it's on - switching between two
+            // branches at the same commit only moves the graph's "HEAD ->" label, so the branch
+            // name is part of the fingerprint too.
+            var refs = await refsTask;
+            var refsFingerprint = string.IsNullOrEmpty(refs) ? null : $"{CurrentBranch}\n{refs}";
+            await CommitHistory.LoadCommitsAsync(refsFingerprint, allowSkipUnchangedCommits);
 
             StatusMessage = $"Loaded {CommitHistory.FilteredCommits.Count} commits, {RepoStatus.UncommittedCount} uncommitted changes.";
         }
@@ -1180,7 +1307,7 @@ namespace Girt.ViewModels
                 var latest = await _gitService.GetCommitsAsync(RepositoryPath, maxCount: 1);
                 if (latest.Count > 0)
                 {
-                    CommitHistory.PrependLocalCommit(latest[0]);
+                    await CommitHistory.PrependLocalCommitAsync(latest[0]);
                 }
                 UpdateRepoStatusLocally(aheadDelta: RepoStatus.HasUpstream ? 1 : 0);
                 StatusMessage = $"Reverted commit {commit.ShortHash} successfully.";
@@ -1688,12 +1815,12 @@ namespace Girt.ViewModels
             {
                 // The commit already succeeded (WorkingChangesViewModel only calls this after
                 // git confirms it did) - "git log -1" fetches just that one commit's real data
-                // (hash/author/date/parent), which PrependLocalCommit splices straight into the
-                // already-loaded graph. No branches/working-changes/full-log reload at all.
+                // (hash/author/date/parent), which PrependLocalCommitAsync splices straight into
+                // the already-loaded graph. No branches/working-changes/full-log reload at all.
                 var latest = await _gitService.GetCommitsAsync(RepositoryPath, maxCount: 1);
                 if (latest.Count > 0)
                 {
-                    CommitHistory.PrependLocalCommit(latest[0]);
+                    await CommitHistory.PrependLocalCommitAsync(latest[0]);
                 }
 
                 UpdateRepoStatusLocally(aheadDelta: RepoStatus.HasUpstream ? 1 : 0);

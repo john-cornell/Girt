@@ -8,7 +8,11 @@ namespace Girt.Services
     public interface IGitService
     {
         DateTime LastCommandCompletedUtc { get; }
+        bool IsCommandInFlight { get; }
         Task<string?> GetRepositoryRootAsync(string directoryPath);
+        Task EnsureFastStatusConfigAsync(string repoPath);
+        Task<string> GetRefsFingerprintAsync(string repoPath);
+        Task<IReadOnlySet<string>> GetIgnoredDirectoryNamesAsync(string repoPath, IEnumerable<string> directoryNames);
         Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath);
         Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000);
         Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash);

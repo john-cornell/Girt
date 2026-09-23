@@ -57,7 +57,14 @@ namespace Girt.ViewModels
 
         private List<GitCommit> _allCommits = new();
         private List<GitBranch> _allBranches = new();
+        private string _lastRefsFingerprint = string.Empty;
         private CancellationTokenSource? _filterCts;
+
+        // LoadCommitsAsync and PrependLocalCommitAsync both rebuild _allCommits/_layoutComputedFor
+        // inside Task.Run, i.e. on thread-pool threads - without this, a background refresh that
+        // lands while a commit's splice is still laying out would have both writing the list
+        // (and the GitCommit lane fields) at the same time.
+        private readonly SemaphoreSlim _commitListGate = new(1, 1);
 
         // Tracks which _allCommits instance the graph layout was last computed for, so
         // ComputeFilteredMatches can skip redoing it when only the filter/isolation state
@@ -231,14 +238,28 @@ namespace Girt.ViewModels
             }
         }
 
-        public async Task LoadCommitsAsync()
+        // refsFingerprint: a snapshot of every ref `git log --all` starts from (HEAD, heads,
+        // remotes, tags, stash - see IGitService.GetRefsFingerprintAsync) plus the current
+        // branch name, taken as part of the same refresh. If it matches the snapshot from the
+        // last successful load, the graph can't have changed, so a background refresh
+        // (allowSkipIfUnchanged: true) skips the log walk and relayout entirely. An explicit F5
+        // passes false and always reloads, but still records the snapshot for next time.
+        // Null/empty means "unknown" and never skips.
+        public async Task LoadCommitsAsync(string? refsFingerprint = null, bool allowSkipIfUnchanged = false)
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            IsLoading = true;
+            await _commitListGate.WaitAsync();
             try
             {
+                if (allowSkipIfUnchanged && !string.IsNullOrEmpty(refsFingerprint) &&
+                    _allCommits.Count > 0 && refsFingerprint == _lastRefsFingerprint)
+                {
+                    return;
+                }
+
+                IsLoading = true;
                 var commits = await _gitService.GetCommitsAsync(repoPath, maxCount: 1000);
                 var freshCommits = commits.ToList();
                 var previousCommits = _allCommits;
@@ -252,8 +273,11 @@ namespace Girt.ViewModels
                 // is "a few new commits at the top" rather than the whole history.
                 var matches = await Task.Run(() =>
                 {
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     _allCommits = TryBuildIncrementalCommitList(previousCommits, freshCommits) ?? freshCommits;
-                    return ComputeFilteredMatches();
+                    var result = ComputeFilteredMatches();
+                    LogService.Timing($"graph layout ({freshCommits.Count} commits)", stopwatch.ElapsedMilliseconds);
+                    return result;
                 });
                 ApplyFilteredCommitsList(matches);
 
@@ -261,10 +285,15 @@ namespace Girt.ViewModels
                 {
                     SelectedCommit = FilteredCommits[0];
                 }
+
+                // Only recorded once the load actually succeeded - recording it up front would
+                // let a failed load make every following background refresh skip.
+                _lastRefsFingerprint = refsFingerprint ?? string.Empty;
             }
             finally
             {
                 IsLoading = false;
+                _commitListGate.Release();
             }
         }
 
@@ -275,22 +304,53 @@ namespace Girt.ViewModels
         // verified incremental-splice path a real reload would take for "one new commit at the
         // top". Falls back to a full local relayout only if that verification doesn't hold
         // (which would mean newCommit's parent isn't actually the previous top commit).
-        public void PrependLocalCommit(GitCommit newCommit)
+        public async Task PrependLocalCommitAsync(GitCommit newCommit)
         {
-            var synthetic = new List<GitCommit> { newCommit };
-            synthetic.AddRange(_allCommits);
+            await _commitListGate.WaitAsync();
+            try
+            {
+                await PrependLocalCommitCoreAsync(newCommit);
+            }
+            finally
+            {
+                _commitListGate.Release();
+            }
+        }
 
-            var incremental = TryBuildIncrementalCommitList(_allCommits, synthetic);
-            if (incremental != null)
+        private async Task PrependLocalCommitCoreAsync(GitCommit newCommit)
+        {
+            // Built inside the gate, so it can't be a stale copy from before a reload that ran
+            // in the meantime (which would put the new commit in the list twice).
+            var previousCommits = _allCommits;
+            if (previousCommits.Count > 0 && string.Equals(previousCommits[0].Hash, newCommit.Hash, StringComparison.OrdinalIgnoreCase))
             {
-                _allCommits = incremental;
+                return;
             }
-            else
+
+            var synthetic = new List<GitCommit> { newCommit };
+            synthetic.AddRange(previousCommits);
+
+            // Same reasoning as LoadCommitsAsync's own Task.Run: the fallback branch below is a
+            // full O(commit count) graph relayout (real CPU work), which would otherwise run on
+            // the UI thread. The normal case (a single new commit whose parent is the previous
+            // top commit) stays cheap either way; this only matters when that verification
+            // fails and the fallback actually triggers.
+            await Task.Run(() =>
             {
-                _allCommits = synthetic;
-                GitGraphLayoutEngine.ComputeGraphLayout(_allCommits);
-                _layoutComputedFor = _allCommits;
-            }
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var incremental = TryBuildIncrementalCommitList(previousCommits, synthetic);
+                if (incremental != null)
+                {
+                    _allCommits = incremental;
+                }
+                else
+                {
+                    _allCommits = synthetic;
+                    GitGraphLayoutEngine.ComputeGraphLayout(_allCommits);
+                    _layoutComputedFor = _allCommits;
+                }
+                LogService.Timing($"graph splice ({(incremental != null ? "incremental" : "full relayout")}, {synthetic.Count} commits)", stopwatch.ElapsedMilliseconds);
+            });
 
             // When nothing is filtered/isolated, the new commit unconditionally belongs at the
             // top of FilteredCommits too - insert it directly (a single Add notification the
