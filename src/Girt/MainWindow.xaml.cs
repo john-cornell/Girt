@@ -22,6 +22,23 @@ namespace Girt
         private Forms.ToolStripMenuItem? _minimizeOnCloseMenuItem;
         private bool _isExiting;
 
+        // While any program is listening through Windows UI Automation (Copilot, Zoom, remote
+        // desktop tools and screen readers all can), WPF re-walks the window's whole
+        // accessibility tree after every layout pass and sends property-change events for it
+        // across processes. On a big repo that tree is ~17,000 elements (3,300 branch rows
+        // plus the commit list), so every screen update froze the UI for seconds at a time.
+        // Exposing the window with no children stops that walk entirely. The trade-off: screen
+        // readers and UI-automation tools can't see inside Girt's main window.
+        protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer()
+            => new ChildlessWindowAutomationPeer(this);
+
+        private sealed class ChildlessWindowAutomationPeer : System.Windows.Automation.Peers.WindowAutomationPeer
+        {
+            public ChildlessWindowAutomationPeer(Window owner) : base(owner) { }
+
+            protected override List<System.Windows.Automation.Peers.AutomationPeer> GetChildrenCore() => new();
+        }
+
         public MainWindow()
         {
             InitializeComponent();

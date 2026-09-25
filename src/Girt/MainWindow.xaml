@@ -387,8 +387,20 @@
                                  ToolTip="Filter branches..." />
                     </Grid>
 
-                    <!-- Branches Tree / List -->
-                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+                    <!-- Branches Tree / List.
+                         Remote branches get their own scrolling area filling the rest of the
+                         sidebar instead of sharing one ScrollViewer+StackPanel with everything
+                         else: inside a StackPanel a list gets unlimited height, which switches
+                         WPF virtualization off, so a repo with ~3,300 remote branches built (and
+                         rebuilt on every branch refresh) a row for every single one - a
+                         multi-second UI freeze on open. New/local branches are few, so they keep
+                         a shared scroll area, capped so they can't crowd the remote list out. -->
+                    <Grid Grid.Row="3">
+                      <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" MaxHeight="320" />
+                        <RowDefinition Height="*" />
+                      </Grid.RowDefinitions>
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <!-- NEW BRANCHES (DISCOVERED ON REFRESH / FETCH) -->
                             <Border Visibility="{Binding BranchList.HasNewBranches, Converter={StaticResource BoolToVisConverter}}"
@@ -723,9 +735,12 @@
                                 </TreeView>
                               </Grid>
                             </Expander>
+                        </StackPanel>
+                    </ScrollViewer>
 
                             <!-- REMOTE BRANCHES GROUP -->
-                            <Expander IsExpanded="{Binding BranchList.IsRemoteExpanded}"
+                            <Expander Grid.Row="1"
+                                      IsExpanded="{Binding BranchList.IsRemoteExpanded}"
                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontWeight="SemiBold"
                                       Margin="0,8,0,0">
@@ -763,7 +778,9 @@
                                          SelectedItem="{Binding BranchList.SelectedBranch}"
                                          Style="{StaticResource ModernListBoxStyle}"
                                          ItemContainerStyle="{StaticResource BranchListBoxItemStyle}"
-                                         PreviewMouseWheel="OnBranchListPreviewMouseWheel"
+                                         VirtualizingPanel.IsVirtualizing="True"
+                                         VirtualizingPanel.VirtualizationMode="Recycling"
+                                         VirtualizingPanel.ScrollUnit="Pixel"
                                          MouseDoubleClick="OnLocalBranchDoubleClicked"
                                          Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
                                     <ListBox.ItemTemplate>
@@ -859,7 +876,10 @@
                                           Background="Transparent"
                                           BorderThickness="0"
                                           ItemContainerStyle="{StaticResource BranchTreeViewItemStyle}"
-                                          PreviewMouseWheel="OnBranchListPreviewMouseWheel"
+                                          VirtualizingPanel.IsVirtualizing="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          VirtualizingPanel.ScrollUnit="Pixel"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
                                           MouseDoubleClick="OnLocalBranchDoubleClicked"
                                           Visibility="{Binding BranchList.GroupBranchesIntoFolders, Converter={StaticResource BoolToVisConverter}}">
                                     <TreeView.ItemTemplate>
@@ -969,8 +989,7 @@
                                 </TreeView>
                               </Grid>
                             </Expander>
-                        </StackPanel>
-                    </ScrollViewer>
+                    </Grid>
                 </Grid>
             </Border>
 

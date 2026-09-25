@@ -1093,7 +1093,41 @@ namespace Girt.Services
         private static int _inFlightCommandCount;
         public bool IsCommandInFlight => Volatile.Read(ref _inFlightCommandCount) > 0;
 
-        private static async Task<(bool Success, string Output, string Error)> RunGitCommandAsync(string workingDirectory, string arguments)
+        // A full refresh asks for the same `status --porcelain=v1 -uall` twice at the same
+        // instant (the toolbar count via GetRepoStatusAsync and the Working Changes list via
+        // GetWorkingTreeChangesAsync). On a 45k-file repo each one is a full disk scan, so the
+        // second caller joins the first one's result instead of starting its own - but only if
+        // that one started moments ago. Joining an older scan could hand back a result from
+        // before a change the caller is refreshing *because of* (e.g. a file just staged).
+        private static readonly TimeSpan StatusJoinWindow = TimeSpan.FromMilliseconds(200);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime StartedUtc, Task<(bool Success, string Output, string Error)> Task)> _inFlightStatus = new();
+
+        private static Task<(bool Success, string Output, string Error)> RunGitCommandAsync(string workingDirectory, string arguments)
+        {
+            if (!arguments.StartsWith("status ", StringComparison.Ordinal))
+            {
+                return RunGitProcessAsync(workingDirectory, arguments);
+            }
+
+            var key = workingDirectory + "\n" + arguments;
+            lock (_inFlightStatus)
+            {
+                if (_inFlightStatus.TryGetValue(key, out var existing) &&
+                    !existing.Task.IsCompleted &&
+                    DateTime.UtcNow - existing.StartedUtc < StatusJoinWindow)
+                {
+                    return existing.Task;
+                }
+
+                var task = RunGitProcessAsync(workingDirectory, arguments);
+                var entry = (DateTime.UtcNow, task);
+                _inFlightStatus[key] = entry;
+                _ = task.ContinueWith(_ => _inFlightStatus.TryRemove(new KeyValuePair<string, (DateTime, Task<(bool, string, string)>)>(key, entry)), TaskScheduler.Default);
+                return task;
+            }
+        }
+
+        private static async Task<(bool Success, string Output, string Error)> RunGitProcessAsync(string workingDirectory, string arguments)
         {
             var stopwatch = Stopwatch.StartNew();
             Interlocked.Increment(ref _inFlightCommandCount);

@@ -58,6 +58,31 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task ConcurrentStatusCalls_ShareOneScan_AndBothGetCorrectResults()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "tracked.txt"), "one");
+            RunGit("add tracked.txt");
+            RunGit("commit -m \"Initial\"");
+            File.WriteAllText(Path.Combine(_testRepoPath, "tracked.txt"), "two");
+            Directory.CreateDirectory(Path.Combine(_testRepoPath, "newdir"));
+            File.WriteAllText(Path.Combine(_testRepoPath, "newdir", "a.txt"), "a");
+            File.WriteAllText(Path.Combine(_testRepoPath, "newdir", "b.txt"), "b");
+
+            // Same instant, same `status -uall` - exactly what a full refresh does.
+            var statusTask = _gitService.GetRepoStatusAsync(_testRepoPath);
+            var changesTask = _gitService.GetWorkingTreeChangesAsync(_testRepoPath);
+            await Task.WhenAll(statusTask, changesTask);
+
+            var changes = await changesTask;
+            Assert.Equal(3, (await statusTask).UncommittedCount);
+            Assert.Equal(3, changes.StagedFiles.Count + changes.UnstagedFiles.Count);
+
+            // A later call after a real change must get a fresh scan, not the old result.
+            File.WriteAllText(Path.Combine(_testRepoPath, "newdir", "c.txt"), "c");
+            Assert.Equal(4, (await _gitService.GetRepoStatusAsync(_testRepoPath)).UncommittedCount);
+        }
+
+        [Fact]
         public async Task EnsureFastStatusConfigAsync_FillsUnsetValues_ButRespectsExplicitOptOut()
         {
             RunGit("config core.fsmonitor false");
