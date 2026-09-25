@@ -24,17 +24,52 @@
                    VerticalAlignment="Center"
                    Visibility="{Binding DiffLines.Count, Converter={StaticResource NullToVisConverter}, ConverterParameter=Empty}" />
 
-        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" CanContentScroll="True">
-            <ItemsControl x:Name="DiffLinesItemsControl"
-                          ItemsSource="{Binding DiffLines}"
-                          VirtualizingStackPanel.IsVirtualizing="True"
-                          VirtualizingStackPanel.VirtualizationMode="Recycling"
-                          ScrollViewer.CanContentScroll="True">
+        <!-- The ScrollViewer must live INSIDE the ItemsControl's template, directly around the
+             ItemsPresenter. Wrapped around the ItemsControl from outside (as it used to be), it
+             measures the list with unlimited height, which silently switches virtualization
+             off: every line got its own row, so a large diff (tens of thousands of lines, since
+             the whole file is fetched as context) froze the UI thread and ate gigabytes. -->
+        <ItemsControl x:Name="DiffLinesItemsControl"
+                      ItemsSource="{Binding DiffLines}"
+                      VirtualizingPanel.IsVirtualizing="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
+                      VirtualizingPanel.ScrollUnit="Pixel"
+                      ScrollViewer.CanContentScroll="True"
+                      ContextMenuOpening="OnDiffContextMenuOpening">
+                <ItemsControl.Template>
+                    <ControlTemplate TargetType="ItemsControl">
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Auto"
+                                      CanContentScroll="True"
+                                      Focusable="False">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </ItemsControl.Template>
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <VirtualizingStackPanel />
                     </ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
+                <!-- One menu for the whole list rather than one per row (each row used to build
+                     its own 6-item ContextMenu). OnDiffContextMenuOpening points it at whichever
+                     line was right-clicked by setting its DataContext, so the menu items' own
+                     bindings and click handlers still see that DiffLine. -->
+                <ItemsControl.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="{Binding Converter={StaticResource DiffToggleLabelConverter}}"
+                                  Click="OnToggleDiffSectionClicked"
+                                  Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
+                        <MenuItem Header="Show Whole File"
+                                  Click="OnExpandAllDiffSectionsClicked" />
+                        <Separator />
+                        <MenuItem Header="Copy Line(s)" Click="OnCopyLinesClicked" />
+                        <Separator Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
+                        <MenuItem Header="Revert Selected Lines"
+                                  Click="OnRevertSelectedLinesClicked"
+                                  Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
+                    </ContextMenu>
+                </ItemsControl.ContextMenu>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type models:DiffLine}">
                         <Border Background="{Binding Converter={StaticResource DiffBgConverter}}"
@@ -53,21 +88,6 @@
                                     </Style.Triggers>
                                 </Style>
                             </Border.Style>
-                            <Border.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="{Binding Converter={StaticResource DiffToggleLabelConverter}}"
-                                              Click="OnToggleDiffSectionClicked"
-                                              Visibility="{Binding CanToggleCollapse, Converter={StaticResource BoolToVisConverter}}" />
-                                    <MenuItem Header="Show Whole File"
-                                              Click="OnExpandAllDiffSectionsClicked" />
-                                    <Separator />
-                                    <MenuItem Header="Copy Line(s)" Click="OnCopyLinesClicked" />
-                                    <Separator Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
-                                    <MenuItem Header="Revert Selected Lines"
-                                              Click="OnRevertSelectedLinesClicked"
-                                              Visibility="{Binding IsSelected, Converter={StaticResource BoolToVisConverter}}" />
-                                </ContextMenu>
-                            </Border.ContextMenu>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="40" />
@@ -115,7 +135,6 @@
                         </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+        </ItemsControl>
     </Grid>
 </UserControl>

@@ -118,9 +118,27 @@ namespace Girt.Controls
             capturedElement?.ReleaseMouseCapture();
         }
 
+        // The list shares a single ContextMenu (see the XAML) - point it at the line under the
+        // cursor so the menu items' bindings and click handlers see that DiffLine, exactly as
+        // they did when every row carried its own menu. Right-clicking empty space shows nothing.
+        private void OnDiffContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            var line = FindDiffLineAt(Mouse.GetPosition(DiffLinesItemsControl));
+            if (line == null || DiffLinesItemsControl.ContextMenu == null)
+            {
+                e.Handled = true;
+                return;
+            }
+            DiffLinesItemsControl.ContextMenu.DataContext = line;
+        }
+
         private DiffLine? FindDiffLineUnderCursor(MouseEventArgs e)
         {
-            var position = e.GetPosition(DiffLinesItemsControl);
+            return FindDiffLineAt(e.GetPosition(DiffLinesItemsControl));
+        }
+
+        private DiffLine? FindDiffLineAt(Point position)
+        {
             var hit = VisualTreeHelper.HitTest(DiffLinesItemsControl, position)?.VisualHit;
             while (hit != null)
             {
