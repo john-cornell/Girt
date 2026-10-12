@@ -1043,6 +1043,75 @@ namespace Girt.ViewModels
         }
 
         [RelayCommand]
+        public void OpenGitBash()
+        {
+            if (string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var gitBash = FindGitBash();
+            if (gitBash == null)
+            {
+                StatusMessage = "Couldn't find git-bash.exe - is Git for Windows installed?";
+                return;
+            }
+
+            try
+            {
+                // --cd rather than WorkingDirectory: CreateProcess rejects UNC paths (repos opened
+                // from WSL or a network share) as a working directory, but git-bash handles them.
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = gitBash,
+                    Arguments = $"--cd=\"{RepositoryPath}\"",
+                    UseShellExecute = false
+                });
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Couldn't open Git Bash: {ex.Message}";
+            }
+        }
+
+        // git.exe on PATH lives in <install>\cmd, <install>\bin or <install>\mingw64\bin;
+        // git-bash.exe sits in <install>. Fall back to the default install locations.
+        private static string? FindGitBash()
+        {
+            var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var rawDir in pathDirs)
+            {
+                var dir = rawDir.Trim('"');
+                try
+                {
+                    if (!File.Exists(Path.Combine(dir, "git.exe"))) continue;
+                    for (var current = new DirectoryInfo(dir); current != null; current = current.Parent)
+                    {
+                        var candidate = Path.Combine(current.FullName, "git-bash.exe");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+                }
+                catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+                {
+                    // Malformed or inaccessible PATH entry - skip it.
+                }
+            }
+
+            foreach (var root in new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs")
+            })
+            {
+                if (string.IsNullOrEmpty(root)) continue;
+                var candidate = Path.Combine(root, "Git", "git-bash.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+
+            return null;
+        }
+
+        [RelayCommand]
         public void ToggleReviewBeforePush()
         {
             PushPillOpensReview = !PushPillOpensReview;

@@ -281,6 +281,12 @@
                             Margin="0,0,6,0"
                             ToolTip="Refresh repository status and commit log (Shortcut: F5)" />
 
+                    <Button Content="&gt;_ Git Bash"
+                            Style="{StaticResource ToolButtonStyle}"
+                            Command="{Binding OpenGitBashCommand}"
+                            Margin="0,0,6,0"
+                            ToolTip="Open a Git Bash terminal in this repository" />
+
                     <CheckBox Content="Auto"
                               IsChecked="{Binding AutoRefresh}"
                               Foreground="{DynamicResource TextSecondaryBrush}"
