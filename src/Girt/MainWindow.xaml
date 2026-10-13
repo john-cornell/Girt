@@ -89,32 +89,35 @@
                             Margin="0,0,6,0"
                             ToolTip="Open local repository folder" />
 
-                    <ComboBox Width="180"
-                              ItemsSource="{Binding RecentRepositories}"
-                              SelectedItem="{Binding RepositoryPath, Mode=OneWay}"
-                              SelectionChanged="OnRecentRepoSelected"
-                              Style="{StaticResource ModernComboBoxStyle}"
-                              VerticalAlignment="Center"
-                              ToolTip="Recent repositories" />
                 </StackPanel>
 
                 <!-- Current Repository / Branch Pills -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0">
-                    <!-- Repo Name -->
-                    <Border Background="{DynamicResource CardBackgroundBrush}"
-                            BorderBrush="{DynamicResource BorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="8,4"
-                            Margin="0,0,6,0">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="📁 " FontSize="11" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding RepositoryName}"
-                                       FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextPrimaryBrush}"
-                                       VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Border>
+                    <!-- Repo Name - click opens a menu of recent repositories to switch to. -->
+                    <Button Style="{StaticResource ToolButtonStyle}"
+                            Padding="0"
+                            Margin="0,0,6,0"
+                            Click="OnRepoPillClicked"
+                            ToolTip="{Binding RepositoryPath, StringFormat='{}{0} - click to switch to a recent repository'}">
+                        <Border Background="{DynamicResource CardBackgroundBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="📁 " FontSize="11" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding RepositoryName}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center"
+                                           MaxWidth="200"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text=" ▾"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                    </Button>
 
                     <!-- Active Branch - name is capped/ellipsized (full name in the tooltip) so
                          a long branch name can't push the badges/actions after it out of view. -->

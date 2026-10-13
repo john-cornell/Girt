@@ -186,15 +186,35 @@ namespace Girt
             }
         }
 
-        private async void OnRecentRepoSelected(object sender, SelectionChangedEventArgs e)
+        private void OnRepoPillClicked(object sender, RoutedEventArgs e)
         {
-            if (sender is ComboBox combo && combo.SelectedItem is string path && !string.IsNullOrEmpty(path))
+            if (sender is not Button pill) return;
+
+            var menu = new ContextMenu { PlacementTarget = pill, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+            var others = _viewModel.RecentRepositories
+                .Where(path => !string.Equals(path, _viewModel.RepositoryPath, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (others.Count == 0)
             {
-                if (path != _viewModel.RepositoryPath)
-                {
-                    await _viewModel.OpenRepositoryAsync(path);
-                }
+                menu.Items.Add(new MenuItem { Header = "No other recent repositories", IsEnabled = false });
             }
+            foreach (var path in others)
+            {
+                var header = new StackPanel { Orientation = Orientation.Horizontal };
+                header.Children.Add(new TextBlock
+                {
+                    Text = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                    FontWeight = FontWeights.SemiBold
+                });
+                var pathText = new TextBlock { Text = "  " + path, Margin = new Thickness(0, 0, 0, 0) };
+                pathText.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
+                header.Children.Add(pathText);
+
+                var item = new MenuItem { Header = header };
+                item.Click += async (_, _) => await _viewModel.OpenRepositoryAsync(path);
+                menu.Items.Add(item);
+            }
+            menu.IsOpen = true;
         }
 
         private async void OnLocalBranchDoubleClicked(object sender, MouseButtonEventArgs e)

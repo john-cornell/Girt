@@ -25,6 +25,10 @@
 - **F5 Refresh**: Quick one-key repository refresh.
 - **⬇ Fetch Remotes**: One-click remote synchronization (`git fetch --all --prune`).
 - **✨ New Branches Tracking**: Automatically detects newly created remote or local branches upon fetch/refresh with 1-click checkout.
+- **⑂ Recent Branch Switcher**: Click the branch pill to jump to any of the last 10 local branches you checked out (read from the HEAD reflog; deleted branches are skipped).
+- **📁 Recent Repository Switcher**: Click the repository pill to switch to a recently opened repository.
+- **>_ Git Bash**: One click opens a Git Bash terminal in the current repository.
+- **Big-Repo Performance**: Stays responsive on repositories with tens of thousands of files and thousands of refs (virtualized lists, fsmonitor/untracked cache enabled automatically, refresh skipped when nothing changed).
 
 ### 📝 Streamlined Working Tree & Staging
 - **Top-to-Bottom Workflow**:
