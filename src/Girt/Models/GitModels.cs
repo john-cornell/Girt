@@ -130,7 +130,21 @@ namespace Girt.Models
         /// <summary>Folder rows only: full path from the tree root (e.g. "feature/BB-100"),
         /// used as the stable key for remembering expand state across tree rebuilds.</summary>
         public string FolderPath { get; set; } = string.Empty;
-        public bool IsExpanded { get; set; } = true;
+        private bool _isExpanded = true;
+        public bool IsExpanded
+        {
+            get => _isExpanded;
+            set
+            {
+                if (_isExpanded == value) return;
+                _isExpanded = value;
+                ExpandedChanged?.Invoke(this);
+            }
+        }
+
+        /// <summary>Raised when the user expands/collapses this folder (via the TreeView's
+        /// two-way binding), so the owner can remember it across rebuilds and restarts.</summary>
+        public Action<BranchTreeItem>? ExpandedChanged { get; set; }
 
         /// <summary>Whether the Checkout button should show for this row - leaf branches only,
         /// and not the branch that's already checked out.</summary>

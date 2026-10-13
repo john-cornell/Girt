@@ -252,7 +252,9 @@ namespace Girt.ViewModels
                     if (message != null) StatusMessage = message;
                 },
                 _themeService.LoadPinnedBranches,
-                _themeService.SavePinnedBranches);
+                _themeService.SavePinnedBranches,
+                _themeService.LoadBranchSidebarState,
+                _themeService.SaveBranchSidebarState);
             CommitHistory = new CommitHistoryViewModel(_gitService, () => RepositoryPath, OnCommitSelected);
             CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);
             UnpushedChanges = new UnpushedChangesViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);

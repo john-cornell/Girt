@@ -400,8 +400,8 @@
 
                     <!-- Search Filter Box -->
                     <Grid Grid.Row="2" Margin="0,0,0,12">
-                        <TextBox Text="{Binding BranchList.FilterText, UpdateSourceTrigger=PropertyChanged}"
-                                 Style="{StaticResource ModernTextBoxStyle}"
+                        <controls:ClearableTextBox Text="{Binding BranchList.FilterText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource ClearableTextBoxStyle}"
                                  ToolTip="Filter branches..." />
                     </Grid>
 
@@ -1084,36 +1084,36 @@
                                        HorizontalAlignment="Center" />
 
                             <!-- Filter by Message -->
-                            <TextBox Grid.Column="1"
+                            <controls:ClearableTextBox Grid.Column="1"
                                      Text="{Binding CommitHistory.FilterSubject, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource ModernTextBoxStyle}"
+                                     Style="{StaticResource ClearableTextBoxStyle}"
                                      Margin="2,0"
                                      Padding="6,3"
                                      FontSize="12"
                                      ToolTip="Filter by commit message..." />
 
                             <!-- Filter by Author -->
-                            <TextBox Grid.Column="2"
+                            <controls:ClearableTextBox Grid.Column="2"
                                      Text="{Binding CommitHistory.FilterAuthor, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource ModernTextBoxStyle}"
+                                     Style="{StaticResource ClearableTextBoxStyle}"
                                      Margin="2,0"
                                      Padding="6,3"
                                      FontSize="12"
                                      ToolTip="Filter by author..." />
 
                             <!-- Filter by Date -->
-                            <TextBox Grid.Column="3"
+                            <controls:ClearableTextBox Grid.Column="3"
                                      Text="{Binding CommitHistory.FilterDate, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource ModernTextBoxStyle}"
+                                     Style="{StaticResource ClearableTextBoxStyle}"
                                      Margin="2,0"
                                      Padding="6,3"
                                      FontSize="12"
                                      ToolTip="Filter by date..." />
 
                             <!-- Filter by SHA -->
-                            <TextBox Grid.Column="4"
+                            <controls:ClearableTextBox Grid.Column="4"
                                      Text="{Binding CommitHistory.FilterSha, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource ModernTextBoxStyle}"
+                                     Style="{StaticResource ClearableTextBoxStyle}"
                                      Margin="2,0"
                                      Padding="6,3"
                                      FontSize="12"

@@ -1392,6 +1392,42 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task BranchListViewModel_SidebarState_SavedOnChange_AndRestoredOnNextLoad()
+        {
+            var fakeGit = new FakeGitService
+            {
+                Branches = new List<GitBranch>
+                {
+                    new() { Name = "feature/BB-100-foo" },
+                    new() { Name = "bugfix/BB-300-baz" },
+                    new() { Name = "main" }
+                }
+            };
+            var store = new Dictionary<string, BranchSidebarState>();
+            BranchSidebarState Load(string repo) => store.TryGetValue(repo, out var s) ? s : new BranchSidebarState();
+            void Save(string repo, BranchSidebarState s) => store[repo] = s;
+            BranchListViewModel NewVm() => new(fakeGit, () => @"C:\FakeRepo", () => Task.CompletedTask, true, _ => { }, (_, _) => { },
+                _ => new HashSet<string>(), (_, _) => { }, Load, Save);
+
+            var first = NewVm();
+            await first.LoadBranchesAsync();
+            first.IsRemoteExpanded = false;
+            first.LocalBranchTree.Single(i => i.IsFolder && i.FolderPath == "bugfix").IsExpanded = false;
+            first.FilterText = "BB";
+            await Task.Delay(400); // filter is debounced, and saved once it applies
+
+            var second = NewVm();
+            await second.LoadBranchesAsync();
+
+            Assert.Equal("BB", second.FilterText);
+            Assert.True(second.IsLocalExpanded);
+            Assert.False(second.IsRemoteExpanded);
+            Assert.False(second.LocalBranchTree.Single(i => i.IsFolder && i.FolderPath == "bugfix").IsExpanded);
+            Assert.True(second.LocalBranchTree.Single(i => i.IsFolder && i.FolderPath == "feature").IsExpanded);
+            Assert.DoesNotContain(second.FilteredLocalBranches, b => b.Name == "main");
+        }
+
+        [Fact]
         public void MainViewModel_ResetDialog_PreFillsTargetCorrectly()
         {
             var fakeGit = new FakeGitService();

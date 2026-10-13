@@ -54,6 +54,19 @@ namespace Girt.Services
 
         /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
         public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
+
+        /// <summary>Branch sidebar layout (search text, section and folder collapse state),
+        /// keyed by repository root path so each repo reopens the way it was left.</summary>
+        public Dictionary<string, BranchSidebarState> BranchSidebarByRepo { get; set; } = new();
+    }
+
+    public class BranchSidebarState
+    {
+        public string FilterText { get; set; } = string.Empty;
+        public bool LocalExpanded { get; set; } = true;
+        public bool RemoteExpanded { get; set; } = true;
+        public List<string> CollapsedLocalFolders { get; set; } = new();
+        public List<string> CollapsedRemoteFolders { get; set; } = new();
     }
 
     public class ThemeService
@@ -226,6 +239,25 @@ namespace Girt.Services
 
             var settings = LoadSettings();
             settings.PinnedBranchesByRepo[repoPath] = pinnedBranchNames.ToList();
+            SaveSettings(settings);
+        }
+
+        public BranchSidebarState LoadBranchSidebarState(string repoPath)
+        {
+            if (!string.IsNullOrEmpty(repoPath) &&
+                LoadSettings().BranchSidebarByRepo.TryGetValue(repoPath, out var state))
+            {
+                return state;
+            }
+            return new BranchSidebarState();
+        }
+
+        public void SaveBranchSidebarState(string repoPath, BranchSidebarState state)
+        {
+            if (string.IsNullOrEmpty(repoPath)) return;
+
+            var settings = LoadSettings();
+            settings.BranchSidebarByRepo[repoPath] = state;
             SaveSettings(settings);
         }
 

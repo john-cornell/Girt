@@ -59,6 +59,13 @@ namespace Girt.ViewModels
         private readonly Action<string, IEnumerable<string>> _savePinnedBranches;
         private HashSet<string> _pinnedBranchNames = new(StringComparer.OrdinalIgnoreCase);
 
+        // Search text, Local/Remote section and folder collapse state, persisted per repo.
+        private readonly Func<string, BranchSidebarState>? _loadSidebarState;
+        private readonly Action<string, BranchSidebarState>? _saveSidebarState;
+        private BranchSidebarState _sidebarState = new();
+        private string? _sidebarStateRepoPath;
+        private bool _restoringSidebarState;
+
         public BranchListViewModel(
             IGitService gitService,
             Func<string> getRepoPath,
@@ -67,8 +74,12 @@ namespace Girt.ViewModels
             Action<bool> saveGroupBranchesIntoFolders,
             Action<bool, string?> setBusy,
             Func<string, HashSet<string>> loadPinnedBranches,
-            Action<string, IEnumerable<string>> savePinnedBranches)
+            Action<string, IEnumerable<string>> savePinnedBranches,
+            Func<string, BranchSidebarState>? loadSidebarState = null,
+            Action<string, BranchSidebarState>? saveSidebarState = null)
         {
+            _loadSidebarState = loadSidebarState;
+            _saveSidebarState = saveSidebarState;
             _gitService = gitService;
             _getRepoPath = getRepoPath;
             _onBranchChanged = onBranchChanged;
@@ -89,6 +100,10 @@ namespace Girt.ViewModels
         // there's never more than one pending, and a stale one never runs after the fact.
         partial void OnFilterTextChanged(string value)
         {
+            _sidebarState.FilterText = value ?? string.Empty;
+            // Restore applies the filter itself straight after loading branches.
+            if (_restoringSidebarState) return;
+
             _filterCts?.Cancel();
             _filterCts = new CancellationTokenSource();
             _ = ScheduleApplyFilterAsync(_filterCts.Token);
@@ -107,6 +122,52 @@ namespace Girt.ViewModels
 
             if (token.IsCancellationRequested) return;
             ApplyFilter();
+            SaveSidebarState();
+        }
+
+        partial void OnIsLocalExpandedChanged(bool value)
+        {
+            _sidebarState.LocalExpanded = value;
+            SaveSidebarState();
+        }
+
+        partial void OnIsRemoteExpandedChanged(bool value)
+        {
+            _sidebarState.RemoteExpanded = value;
+            SaveSidebarState();
+        }
+
+        private void RestoreSidebarState(string repoPath)
+        {
+            _sidebarStateRepoPath = repoPath;
+            _sidebarState = _loadSidebarState?.Invoke(repoPath) ?? new BranchSidebarState();
+            var restored = _sidebarState;
+
+            _restoringSidebarState = true;
+            try
+            {
+                _filterCts?.Cancel();
+                FilterText = restored.FilterText;
+                IsLocalExpanded = restored.LocalExpanded;
+                IsRemoteExpanded = restored.RemoteExpanded;
+            }
+            finally
+            {
+                _restoringSidebarState = false;
+            }
+        }
+
+        private void SaveSidebarState()
+        {
+            if (_restoringSidebarState || string.IsNullOrEmpty(_sidebarStateRepoPath)) return;
+            _saveSidebarState?.Invoke(_sidebarStateRepoPath, _sidebarState);
+        }
+
+        private void OnFolderExpandedChanged(List<string> collapsedFolders, BranchTreeItem folder)
+        {
+            collapsedFolders.RemoveAll(path => string.Equals(path, folder.FolderPath, StringComparison.OrdinalIgnoreCase));
+            if (!folder.IsExpanded) collapsedFolders.Add(folder.FolderPath);
+            SaveSidebarState();
         }
 
         [RelayCommand]
@@ -147,6 +208,7 @@ namespace Girt.ViewModels
 
             if (isRepoSwitch)
             {
+                RestoreSidebarState(repoPath);
                 NewBranches.Clear();
                 OnPropertyChanged(nameof(HasNewBranches));
             }
@@ -294,7 +356,7 @@ namespace Girt.ViewModels
             // the user is looking at the flat list (a fast, hot path for e.g. pinning).
             if (GroupBranchesIntoFolders)
             {
-                RebuildBranchTree(LocalBranchTree, localList);
+                RebuildBranchTree(LocalBranchTree, localList, _sidebarState.CollapsedLocalFolders);
             }
         }
 
@@ -315,7 +377,7 @@ namespace Girt.ViewModels
 
             if (GroupBranchesIntoFolders)
             {
-                RebuildBranchTree(RemoteBranchTree, remoteList);
+                RebuildBranchTree(RemoteBranchTree, remoteList, _sidebarState.CollapsedRemoteFolders);
             }
         }
 
@@ -324,11 +386,11 @@ namespace Girt.ViewModels
         /// instead of a hand-flattened, hand-indented list. Expand/collapse is handled entirely
         /// by the TreeView itself (TreeViewItem.IsExpanded two-way bound to BranchTreeItem.
         /// IsExpanded) - this only needs to carry each folder's expand state across the rebuild,
-        /// since the old tree's node instances are discarded.</summary>
-        private static void RebuildBranchTree(ObservableCollection<BranchTreeItem> target, IReadOnlyList<GitBranch> branches)
+        /// since the old tree's node instances are discarded. That state lives in the persisted
+        /// collapsed-folder list, which each folder updates as the user toggles it.</summary>
+        private void RebuildBranchTree(ObservableCollection<BranchTreeItem> target, IReadOnlyList<GitBranch> branches, List<string> collapsedFolders)
         {
-            var expandState = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            SnapshotExpandState(target, expandState);
+            var collapsed = new HashSet<string>(collapsedFolders, StringComparer.OrdinalIgnoreCase);
 
             // Pinned branches float to the very top as plain leaves - no synthetic "Pinned"
             // folder, and no duplicate left behind in their normal folder position (this is a
@@ -349,7 +411,8 @@ namespace Girt.ViewModels
             }
             foreach (var folderName in root.ChildFolderOrder)
             {
-                target.Add(BuildFolderItem(root.ChildFolders[folderName], folderName, parentPath: "", expandState));
+                target.Add(BuildFolderItem(root.ChildFolders[folderName], folderName, parentPath: "", collapsed,
+                    folder => OnFolderExpandedChanged(collapsedFolders, folder)));
             }
             foreach (var (leafName, branch) in root.Leaves)
             {
@@ -357,17 +420,8 @@ namespace Girt.ViewModels
             }
         }
 
-        private static void SnapshotExpandState(IEnumerable<BranchTreeItem> items, Dictionary<string, bool> map)
-        {
-            foreach (var item in items)
-            {
-                if (!item.IsFolder) continue;
-                map[item.FolderPath] = item.IsExpanded;
-                SnapshotExpandState(item.Children, map);
-            }
-        }
-
-        private static BranchTreeItem BuildFolderItem(BranchFolderNode node, string folderName, string parentPath, IReadOnlyDictionary<string, bool> expandState)
+        private static BranchTreeItem BuildFolderItem(BranchFolderNode node, string folderName, string parentPath,
+            IReadOnlySet<string> collapsed, Action<BranchTreeItem> onExpandedChanged)
         {
             var folderPath = parentPath.Length == 0 ? folderName : $"{parentPath}/{folderName}";
             var item = new BranchTreeItem
@@ -375,11 +429,13 @@ namespace Girt.ViewModels
                 IsFolder = true,
                 DisplayName = folderName,
                 FolderPath = folderPath,
-                IsExpanded = !expandState.TryGetValue(folderPath, out var wasExpanded) || wasExpanded
+                IsExpanded = !collapsed.Contains(folderPath)
             };
+            // Hooked up after IsExpanded is initialised so building the tree isn't reported as a toggle.
+            item.ExpandedChanged = onExpandedChanged;
             foreach (var childFolderName in node.ChildFolderOrder)
             {
-                item.Children.Add(BuildFolderItem(node.ChildFolders[childFolderName], childFolderName, folderPath, expandState));
+                item.Children.Add(BuildFolderItem(node.ChildFolders[childFolderName], childFolderName, folderPath, collapsed, onExpandedChanged));
             }
             foreach (var (leafName, branch) in node.Leaves)
             {
