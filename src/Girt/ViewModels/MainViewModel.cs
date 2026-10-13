@@ -1042,6 +1042,34 @@ namespace Girt.ViewModels
             UnpushedChanges.Close();
         }
 
+        private const int RecentBranchLimit = 10;
+
+        // Local branches that still exist, most recently checked out first, excluding the
+        // current one. Read on demand (dropdown open) rather than on every refresh.
+        public async Task<IReadOnlyList<string>> GetRecentBranchesAsync()
+        {
+            if (string.IsNullOrEmpty(RepositoryPath)) return Array.Empty<string>();
+
+            var recent = await _gitService.GetRecentlyCheckedOutBranchesAsync(RepositoryPath);
+            var localBranches = new HashSet<string>(
+                BranchList.AllBranches.Where(b => !b.IsRemote).Select(b => b.Name),
+                StringComparer.Ordinal);
+
+            return recent
+                .Where(name => localBranches.Contains(name) && name != CurrentBranch)
+                .Take(RecentBranchLimit)
+                .ToList();
+        }
+
+        [RelayCommand]
+        public async Task SwitchToBranchAsync(string? branchName)
+        {
+            if (string.IsNullOrEmpty(branchName)) return;
+            var branch = BranchList.AllBranches.FirstOrDefault(b => !b.IsRemote && b.Name == branchName);
+            if (branch == null) return;
+            await BranchList.CheckoutBranchAsync(branch);
+        }
+
         [RelayCommand]
         public void OpenGitBash()
         {

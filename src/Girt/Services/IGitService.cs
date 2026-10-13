@@ -14,6 +14,7 @@ namespace Girt.Services
         Task<string> GetRefsFingerprintAsync(string repoPath);
         Task<IReadOnlySet<string>> GetIgnoredDirectoryNamesAsync(string repoPath, IEnumerable<string> directoryNames);
         Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath);
+        Task<IReadOnlyList<string>> GetRecentlyCheckedOutBranchesAsync(string repoPath);
         Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000);
         Task<IReadOnlyList<GitFileDiff>> GetCommitDiffAsync(string repoPath, string commitHash);
         Task<string> GetRawFileDiffAsync(string repoPath, string commitHash, string filePath, bool ignoreWhitespace = false, string? diffAgainstRef = null);

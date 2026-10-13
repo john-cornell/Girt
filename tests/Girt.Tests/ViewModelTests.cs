@@ -36,6 +36,8 @@ namespace Girt.Tests
         public Task<IReadOnlySet<string>> GetIgnoredDirectoryNamesAsync(string repoPath, IEnumerable<string> directoryNames)
             => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(directoryNames.Where(IgnoredDirectoryNames.Contains), StringComparer.OrdinalIgnoreCase));
         public Task<IReadOnlyList<GitBranch>> GetBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<GitBranch>>(Branches);
+        public List<string> RecentlyCheckedOutBranches { get; set; } = new();
+        public Task<IReadOnlyList<string>> GetRecentlyCheckedOutBranchesAsync(string repoPath) => Task.FromResult<IReadOnlyList<string>>(RecentlyCheckedOutBranches);
         public int GetCommitsCallCount { get; set; }
         public Task<IReadOnlyList<GitCommit>> GetCommitsAsync(string repoPath, int maxCount = 1000)
         {
@@ -1370,6 +1372,23 @@ namespace Girt.Tests
             await mainVm.OpenRepositoryAsync(@"C:\FakeRepo");
 
             Assert.True(fakeGit.EnsureFastStatusConfigCalled);
+        }
+
+        [Fact]
+        public async Task MainViewModel_GetRecentBranches_OnlyExistingLocalBranches_ExcludingCurrent_CappedAtTen()
+        {
+            var fakeGit = new FakeGitService { RepoRoot = @"C:\FakeRepo", CurrentBranch = "main" };
+            fakeGit.Branches.Add(new GitBranch { Name = "main", IsCurrent = true });
+            for (var i = 0; i < 12; i++) fakeGit.Branches.Add(new GitBranch { Name = $"feature/{i}" });
+            fakeGit.Branches.Add(new GitBranch { Name = "origin/remote-only", IsRemote = true, RemoteName = "origin" });
+            fakeGit.RecentlyCheckedOutBranches = new List<string> { "main", "deleted-branch", "origin/remote-only", "abc1234" };
+            fakeGit.RecentlyCheckedOutBranches.AddRange(Enumerable.Range(0, 12).Select(i => $"feature/{i}"));
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService());
+            await mainVm.OpenRepositoryAsync(@"C:\FakeRepo");
+
+            var recent = await mainVm.GetRecentBranchesAsync();
+
+            Assert.Equal(Enumerable.Range(0, 10).Select(i => $"feature/{i}"), recent);
         }
 
         [Fact]

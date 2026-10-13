@@ -222,6 +222,28 @@ namespace Girt
             }
         }
 
+        // Menu built in code-behind for the same reason as the handlers below: commands bound
+        // through a ContextMenu's RelativeSource proved unreliable inside the popup.
+        private async void OnBranchPillClicked(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button pill) return;
+
+            var menu = new ContextMenu { PlacementTarget = pill, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+            var recent = await _viewModel.GetRecentBranchesAsync();
+            if (recent.Count == 0)
+            {
+                menu.Items.Add(new MenuItem { Header = "No other recent branches", IsEnabled = false });
+            }
+            foreach (var name in recent)
+            {
+                // Header as a TextBlock so underscores in branch names aren't eaten as access keys.
+                var item = new MenuItem { Header = new TextBlock { Text = name } };
+                item.Click += async (_, _) => await _viewModel.SwitchToBranchCommand.ExecuteAsync(name);
+                menu.Items.Add(item);
+            }
+            menu.IsOpen = true;
+        }
+
         // Driven by code-behind rather than a Command bound through the context menu's
         // RelativeSource, which proved unreliable for reaching this command from inside a popup.
         private void OnToggleGroupBranchesIntoFoldersClicked(object sender, RoutedEventArgs e)

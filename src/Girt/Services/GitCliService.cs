@@ -89,6 +89,32 @@ namespace Girt.Services
             return success ? output.Trim() : string.Empty;
         }
 
+        // Branch names HEAD has moved to/from, most recent first, read from the HEAD reflog's
+        // "checkout: moving from A to B" entries. Names may include deleted branches or detached
+        // commits - callers filter against the branches that currently exist.
+        public async Task<IReadOnlyList<string>> GetRecentlyCheckedOutBranchesAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "reflog show --format=%gs -n 2000 HEAD").ConfigureAwait(false);
+            var names = new List<string>();
+            if (!success) return names;
+
+            const string prefix = "checkout: moving from ";
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var entry = line.TrimEnd('\r');
+                if (!entry.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                var separator = entry.LastIndexOf(" to ", StringComparison.Ordinal);
+                if (separator < prefix.Length) continue;
+
+                var to = entry[(separator + 4)..];
+                var from = entry[prefix.Length..separator];
+                if (seen.Add(to)) names.Add(to);
+                if (seen.Add(from)) names.Add(from);
+            }
+            return names;
+        }
+
         // Asks git (one process) which of the given directory names its ignore rules would
         // exclude, by probing a made-up path under each - check-ignore matches patterns without
         // needing the path to exist. Lets the file watcher skip e.g. a gitignored NuGet

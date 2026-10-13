@@ -125,6 +125,23 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task GetRecentlyCheckedOutBranchesAsync_ReturnsMostRecentFirst_WithoutDuplicates()
+        {
+            File.WriteAllText(Path.Combine(_testRepoPath, "a.txt"), "one");
+            RunGit("add a.txt");
+            RunGit("commit -m \"Initial\"");
+            RunGit("branch -M main");
+            RunGit("checkout -b feature/one");
+            RunGit("checkout -b feature/two");
+            RunGit("checkout main");
+            RunGit("checkout feature/one");
+
+            var recent = await _gitService.GetRecentlyCheckedOutBranchesAsync(_testRepoPath);
+
+            Assert.Equal(new[] { "feature/one", "main", "feature/two" }, recent);
+        }
+
+        [Fact]
         public async Task GitCliService_CanRetrieveBranchesCommitsAndDiff()
         {
             // 1. Create Initial Commit

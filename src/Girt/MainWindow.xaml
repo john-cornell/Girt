@@ -118,25 +118,34 @@
 
                     <!-- Active Branch - name is capped/ellipsized (full name in the tooltip) so
                          a long branch name can't push the badges/actions after it out of view. -->
-                    <Border Background="{DynamicResource ActiveItemHighlightBrush}"
-                            BorderBrush="{DynamicResource BorderAccentBrush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="8,4"
-                            ToolTip="{Binding CurrentBranch}">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="⑂ "
-                                       Foreground="{DynamicResource TextAccentBrush}"
-                                       FontWeight="Bold"
-                                       VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding CurrentBranch}"
-                                       FontWeight="Bold"
-                                       Foreground="{DynamicResource TextAccentBrush}"
-                                       VerticalAlignment="Center"
-                                       MaxWidth="240"
-                                       TextTrimming="CharacterEllipsis" />
-                        </StackPanel>
-                    </Border>
+                    <!-- Click opens a menu of the last 10 local branches checked out (from the
+                         HEAD reflog), loaded on demand so it adds nothing to refreshes. -->
+                    <Button Style="{StaticResource ToolButtonStyle}"
+                            Padding="0"
+                            Click="OnBranchPillClicked"
+                            ToolTip="{Binding CurrentBranch, StringFormat='{}{0} - click to switch to a recent branch'}">
+                        <Border Background="{DynamicResource ActiveItemHighlightBrush}"
+                                BorderBrush="{DynamicResource BorderAccentBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="⑂ "
+                                           Foreground="{DynamicResource TextAccentBrush}"
+                                           FontWeight="Bold"
+                                           VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding CurrentBranch}"
+                                           FontWeight="Bold"
+                                           Foreground="{DynamicResource TextAccentBrush}"
+                                           VerticalAlignment="Center"
+                                           MaxWidth="240"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text=" ▾"
+                                           Foreground="{DynamicResource TextAccentBrush}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                    </Button>
                 </StackPanel>
 
                 <!-- Status & Sync Badges (#to commit, #to push, #to pull) -->
