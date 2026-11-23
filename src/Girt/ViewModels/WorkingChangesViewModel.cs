@@ -409,27 +409,33 @@ namespace Girt.ViewModels
 
             if (!ConfirmDiscardAction($"Are you sure you want to discard changes in '{file.Path}'?\nThis cannot be undone.")) return;
 
-            await DiscardChangesNoConfirmAsync(file);
+            await DiscardChangesNoConfirmAsync(new[] { file });
         }
 
-        private async Task DiscardChangesNoConfirmAsync(GitWorkingFile file)
+        private async Task DiscardChangesNoConfirmAsync(IReadOnlyList<GitWorkingFile> files)
         {
             var repoPath = _getRepoPath();
             if (string.IsNullOrEmpty(repoPath)) return;
 
-            // Optimistic: discarding removes the file from view either way (reverted to a
-            // clean/untracked-deleted state), so drop it immediately and restore it if the
-            // discard actually fails.
-            UnstagedFiles.Remove(file);
+            // NOT optimistic like stage/unstage: pulling a selected file out of the list moves
+            // the selection, which kicks off a git diff for the next file, and that diff can
+            // grab index.lock right when restore needs it. So git goes first, list second.
+            var tracked = files.Where(f => f.Status != FileStatusType.Untracked).Select(f => f.Path).ToList();
+            var untracked = files.Where(f => f.Status == FileStatusType.Untracked).Select(f => f.Path).ToList();
 
-            var (success, error) = await _gitService.DiscardChangesAsync(repoPath, file.Path);
+            var (success, error) = await _gitService.DiscardChangesAsync(repoPath, tracked, untracked);
             if (success)
             {
+                foreach (var file in files)
+                {
+                    UnstagedFiles.Remove(file);
+                }
                 await _onRepositoryUpdated(false);
             }
             else
             {
-                UnstagedFiles.Add(file);
+                // Some files may have gone and some not, so ask git what's actually left
+                await LoadChangesAsync();
                 MessageBox.Show($"Failed to discard changes: {error}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -465,10 +471,7 @@ namespace Girt.ViewModels
             // One confirmation for the whole batch, not one per file.
             if (!ConfirmDiscardAction($"Are you sure you want to discard changes in {files.Count} file(s)?\nThis cannot be undone.")) return;
 
-            foreach (var file in files)
-            {
-                await DiscardChangesNoConfirmAsync(file);
-            }
+            await DiscardChangesNoConfirmAsync(files);
         }
 
         [RelayCommand]

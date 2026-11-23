@@ -15,6 +15,14 @@ namespace Girt.Services
         System
     }
 
+    /// <summary>What to do with merge-tool `.orig` backups after a conflicted merge finishes.</summary>
+    public enum OrigFileCleanup
+    {
+        Ask,
+        AlwaysDelete,
+        Keep
+    }
+
     public class AppSettings
     {
         public AppTheme Theme { get; set; } = AppTheme.Dark;
@@ -51,6 +59,10 @@ namespace Girt.Services
         /// regardless of this setting; this only controls the noisy "every command" case,
         /// useful when actively chasing a performance issue.</summary>
         public bool EnableTimingLogs { get; set; } = false;
+
+        /// <summary>What to do with leftover `.orig` files after a conflicted merge finishes.
+        /// The "Don't ask again" box on the prompt writes here too.</summary>
+        public OrigFileCleanup OrigFileCleanup { get; set; } = OrigFileCleanup.Ask;
 
         /// <summary>Pinned branch names, keyed by repository root path (pinning is per-repo).</summary>
         public Dictionary<string, List<string>> PinnedBranchesByRepo { get; set; } = new();
@@ -220,6 +232,15 @@ namespace Girt.Services
         {
             var settings = LoadSettings();
             settings.EnableTimingLogs = value;
+            SaveSettings(settings);
+        }
+
+        public OrigFileCleanup LoadOrigFileCleanup() => LoadSettings().OrigFileCleanup;
+
+        public void SaveOrigFileCleanup(OrigFileCleanup value)
+        {
+            var settings = LoadSettings();
+            settings.OrigFileCleanup = value;
             SaveSettings(settings);
         }
 

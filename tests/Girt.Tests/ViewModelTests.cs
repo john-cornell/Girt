@@ -123,9 +123,12 @@ namespace Girt.Tests
             return Task.FromResult((true, "Unstaged all"));
         }
 
-        public Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, string filePath)
+        public int DiscardCallCount { get; private set; }
+
+        public Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, IReadOnlyList<string> trackedPaths, IReadOnlyList<string> untrackedPaths)
         {
-            Changes.UnstagedFiles.RemoveAll(f => f.Path == filePath);
+            DiscardCallCount++;
+            Changes.UnstagedFiles.RemoveAll(f => trackedPaths.Contains(f.Path) || untrackedPaths.Contains(f.Path));
             return Task.FromResult((true, "Discarded"));
         }
 
@@ -268,8 +271,6 @@ namespace Girt.Tests
         public List<GitCommit> CommitsBetween { get; set; } = new();
         public List<GitFileDiff> DiffStatBetween { get; set; } = new();
         public List<MergeConflictFile> ConflictedFiles { get; set; } = new();
-        public string ConflictOursDiff { get; set; } = "";
-        public string ConflictTheirsDiff { get; set; } = "";
         public bool MergeAborted { get; set; }
         public bool MergeContinued { get; set; }
         public bool NextMergeSucceeds { get; set; } = true;
@@ -289,8 +290,39 @@ namespace Girt.Tests
         public Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath) =>
             Task.FromResult<IReadOnlyList<MergeConflictFile>>(ConflictedFiles);
 
-        public Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath) =>
-            Task.FromResult((ConflictOursDiff, ConflictTheirsDiff));
+        // Per path, what git merge-file would hand back. Unknown paths get a one-conflict file.
+        public Dictionary<string, string> ConflictMergedText { get; } = new();
+        public bool? LastMineIsTheirsStage { get; private set; }
+        public Task<ConflictMergeResult> GetConflictMergeAsync(string repoPath, string filePath, bool mineIsTheirsStage)
+        {
+            LastMineIsTheirsStage = mineIsTheirsStage;
+            var marker = ConflictDocument.MarkerSize;
+            var text = ConflictMergedText.TryGetValue(filePath, out var known)
+                ? known
+                : $"top\n{new string('<', marker)} mine\nmine line\n{new string('|', marker)} base\nbase line\n{new string('=', marker)}\ntheirs line\n{new string('>', marker)} theirs\nbottom\n";
+            return Task.FromResult(new ConflictMergeResult { Merged = System.Text.Encoding.UTF8.GetBytes(text) });
+        }
+
+        public List<(string Path, bool OursStage)> CheckedOutSides { get; } = new();
+        public Task<(bool Success, string Output)> CheckoutConflictSideAsync(string repoPath, string filePath, bool oursStage)
+        {
+            CheckedOutSides.Add((filePath, oursStage));
+            return Task.FromResult((true, ""));
+        }
+
+        public List<string> RemovedFiles { get; } = new();
+        public Task<(bool Success, string Output)> RemoveConflictedFileAsync(string repoPath, string filePath)
+        {
+            RemovedFiles.Add(filePath);
+            return Task.FromResult((true, ""));
+        }
+
+        public Dictionary<string, byte[]> WrittenFiles { get; } = new();
+        public Task<(bool Success, string Output)> WriteWorkingTreeFileBytesAsync(string repoPath, string filePath, byte[] content)
+        {
+            WrittenFiles[filePath] = content;
+            return Task.FromResult((true, "File updated"));
+        }
 
         public string? LastMergeToolFilePath { get; set; }
         public bool NextMergeToolSucceeds { get; set; } = true;
@@ -348,6 +380,78 @@ namespace Girt.Tests
             ForcePushWithLeaseCalled = true;
             return Task.FromResult((NextForcePushSucceeds, NextForcePushSucceeds ? "Force pushed" : "Force push failed"));
         }
+
+        // Update-from-branch flow. Every call is logged in order so tests can check the sequence.
+        public List<string> FlowLog { get; } = new();
+        public List<GitStashEntry> Stashes { get; } = new();
+        public bool HasLocalChangesToStash { get; set; }
+        public FastForwardResult NextFastForwardResult { get; set; } = FastForwardResult.Updated;
+        public bool NextStashPopSucceeds { get; set; } = true;
+        public List<MergeConflictFile> ConflictsAfterStashPop { get; set; } = new();
+        public bool MergeOrRebaseInProgress { get; set; }
+
+        public Task<(bool Success, string? StashHash, string Output)> StashPushAllAsync(string repoPath, string message)
+        {
+            FlowLog.Add($"stash-push:{message}");
+            if (!HasLocalChangesToStash) return Task.FromResult<(bool, string?, string)>((true, null, "No local changes to save"));
+            var hash = $"stash{Stashes.Count}hash";
+            Stashes.Insert(0, new GitStashEntry { Hash = hash, Message = $"On {CurrentBranch}: {message}" });
+            RenumberStashes();
+            return Task.FromResult<(bool, string?, string)>((true, hash, "Saved working directory"));
+        }
+
+        public Task<IReadOnlyList<GitStashEntry>> GetStashesAsync(string repoPath) =>
+            Task.FromResult<IReadOnlyList<GitStashEntry>>(Stashes.ToList());
+
+        public Task<(bool Success, string Output)> StashPopByHashAsync(string repoPath, string stashHash)
+        {
+            FlowLog.Add($"stash-pop:{stashHash}");
+            if (!NextStashPopSucceeds)
+            {
+                // git keeps the stash when a pop conflicts
+                ConflictedFiles = ConflictsAfterStashPop;
+                return Task.FromResult((false, "CONFLICT (content): Merge conflict"));
+            }
+            Stashes.RemoveAll(s => s.Hash == stashHash);
+            RenumberStashes();
+            return Task.FromResult((true, "Dropped"));
+        }
+
+        public Task<(bool Success, string Output)> DropStashByHashAsync(string repoPath, string stashHash)
+        {
+            FlowLog.Add($"stash-drop:{stashHash}");
+            Stashes.RemoveAll(s => s.Hash == stashHash);
+            RenumberStashes();
+            return Task.FromResult((true, "Dropped"));
+        }
+
+        public Task<(bool Success, string Output)> AbortStashPopAsync(string repoPath)
+        {
+            FlowLog.Add("abort-stash-pop");
+            ConflictedFiles = new();
+            return Task.FromResult((true, ""));
+        }
+
+        public Task<(FastForwardResult Result, string Output)> FastForwardBranchFromUpstreamAsync(string repoPath, string branchName)
+        {
+            FlowLog.Add($"fast-forward:{branchName}");
+            return Task.FromResult((NextFastForwardResult, NextFastForwardResult.ToString()));
+        }
+
+        public Task<bool> IsMergeOrRebaseInProgressAsync(string repoPath) => Task.FromResult(MergeOrRebaseInProgress);
+
+        public List<string> OrigBackups { get; set; } = new();
+        public List<string>? LastOrigLookupPaths { get; private set; }
+        public Task<IReadOnlyList<string>> GetUntrackedOrigBackupsAsync(string repoPath, IEnumerable<string> conflictedPaths)
+        {
+            LastOrigLookupPaths = conflictedPaths.ToList();
+            return Task.FromResult<IReadOnlyList<string>>(OrigBackups);
+        }
+
+        private void RenumberStashes()
+        {
+            for (var i = 0; i < Stashes.Count; i++) Stashes[i].Ref = $"stash@{{{i}}}";
+        }
     }
 
     public class ViewModelTests
@@ -358,6 +462,175 @@ namespace Girt.Tests
         // cross-contaminates other tests that happen to run against the same file.
         private static ThemeService CreateIsolatedThemeService() =>
             new(Path.Combine(Path.GetTempPath(), $"GirtTestSettings_{Guid.NewGuid():N}.json"));
+
+        private static List<GitBranch> LocalBranches(params string[] names) =>
+            names.Select(n => new GitBranch { Name = n, TipCommitHash = "abc" + n }).ToList();
+
+        [Theory]
+        [InlineData("feature/x", new[] { "main", "develop", "feature/x" }, "develop")]
+        [InlineData("feature/x", new[] { "master", "feature/x" }, "master")]
+        [InlineData("develop", new[] { "main", "develop" }, null)]
+        [InlineData("main", new[] { "main", "feature/x" }, null)]
+        [InlineData("feature/x", new[] { "feature/x", "feature/y" }, null)]
+        [InlineData("Detached HEAD", new[] { "develop" }, null)]
+        public async Task MainViewModel_UpdateFromBranchName_PrefersDevelopAndHidesOnTrunk(string current, string[] branches, string? expected)
+        {
+            var fakeGit = new FakeGitService { Branches = LocalBranches(branches), CurrentBranch = current };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            await mainVm.RefreshRepositoryAsync();
+
+            Assert.Equal(expected, mainVm.UpdateFromBranchName);
+        }
+
+        [Fact]
+        public async Task MainViewModel_MergeLatest_DivergedBranch_PutsStashBackAndDoesNotMerge()
+        {
+            var errors = new List<string>();
+            var fakeGit = new FakeGitService
+            {
+                HasLocalChangesToStash = true,
+                NextFastForwardResult = FastForwardResult.Diverged
+            };
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "feature/x",
+                ReportErrorAction = (message, _) => errors.Add(message)
+            };
+
+            await mainVm.MergeLatestIntoCurrentAsync("develop");
+
+            Assert.Null(fakeGit.LastMergedRef);
+            Assert.Equal(new[] { "stash-push:" + MainViewModel.AutoStashMessagePrefix + "develop", "fast-forward:develop", "stash-pop:stash0hash" },
+                fakeGit.FlowLog);
+            Assert.Empty(fakeGit.Stashes);
+            Assert.Contains("can't be updated automatically", Assert.Single(errors));
+        }
+
+        [Fact]
+        public async Task MainViewModel_MergeLatest_CleanTree_SkipsStashPop()
+        {
+            var fakeGit = new FakeGitService();
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "feature/x"
+            };
+
+            await mainVm.MergeLatestIntoCurrentAsync("develop");
+
+            Assert.Equal("develop", fakeGit.LastMergedRef);
+            Assert.DoesNotContain(fakeGit.FlowLog, entry => entry.StartsWith("stash-pop"));
+        }
+
+        private static async Task<(MainViewModel Vm, FakeGitService Git, List<string> Deleted)> FinishConflictedMergeAsync(OrigFileCleanup setting)
+        {
+            var deleted = new List<string>();
+            var fakeGit = new FakeGitService
+            {
+                NextMergeSucceeds = false,
+                ConflictedFiles = { new MergeConflictFile { Path = "src/a.cs", ConflictType = MergeConflictType.BothModified } },
+                OrigBackups = { "src/a.cs.orig" }
+            };
+            var themeService = CreateIsolatedThemeService();
+            themeService.SaveOrigFileCleanup(setting);
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), themeService)
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                CurrentBranch = "feature/x"
+            };
+            mainVm.DeleteFilesAction = paths => { deleted.AddRange(paths); return (paths.Count, null); };
+
+            await mainVm.MergeIntoCurrentBranchCommand.ExecuteAsync(new GitBranch { Name = "develop" });
+            await mainVm.ConfirmMergeCommand.ExecuteAsync(null);
+            await mainVm.MarkConflictFileResolvedCommand.ExecuteAsync(mainVm.MergeConflictFiles[0]);
+            await mainVm.ContinueMergeCommand.ExecuteAsync(null);
+            return (mainVm, fakeGit, deleted);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrigCleanup_Ask_ShowsDialogForConflictedPathsOnly()
+        {
+            var (vm, git, deleted) = await FinishConflictedMergeAsync(OrigFileCleanup.Ask);
+
+            Assert.True(vm.IsOrigCleanupDialogOpen);
+            Assert.Equal(new[] { "src/a.cs" }, git.LastOrigLookupPaths);
+            Assert.Equal(new[] { "src/a.cs.orig" }, vm.OrigCleanupFiles);
+            Assert.Empty(deleted);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrigCleanup_DontAskAgainDelete_DeletesAndRemembers()
+        {
+            var (vm, _, deleted) = await FinishConflictedMergeAsync(OrigFileCleanup.Ask);
+
+            vm.OrigCleanupDontAskAgain = true;
+            await vm.ConfirmOrigCleanupDeleteCommand.ExecuteAsync(null);
+
+            Assert.False(vm.IsOrigCleanupDialogOpen);
+            Assert.Equal(new[] { Path.Combine(@"C:\FakeRepo", "src/a.cs.orig") }, deleted);
+            Assert.Equal(OrigFileCleanup.AlwaysDelete, vm.Settings.OrigFileCleanup);
+            Assert.True(vm.Settings.OrigCleanupAlwaysDelete);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrigCleanup_DontAskAgainKeep_RemembersKeep()
+        {
+            var (vm, _, deleted) = await FinishConflictedMergeAsync(OrigFileCleanup.Ask);
+
+            vm.OrigCleanupDontAskAgain = true;
+            vm.ConfirmOrigCleanupKeepCommand.Execute(null);
+
+            Assert.Empty(deleted);
+            Assert.Equal(OrigFileCleanup.Keep, vm.Settings.OrigFileCleanup);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrigCleanup_AlwaysDelete_DeletesWithoutAsking()
+        {
+            var (vm, _, deleted) = await FinishConflictedMergeAsync(OrigFileCleanup.AlwaysDelete);
+
+            Assert.False(vm.IsOrigCleanupDialogOpen);
+            Assert.Single(deleted);
+            Assert.Contains("Deleted 1", vm.StatusMessage);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrigCleanup_Keep_DoesNothing()
+        {
+            var (vm, git, deleted) = await FinishConflictedMergeAsync(OrigFileCleanup.Keep);
+
+            Assert.False(vm.IsOrigCleanupDialogOpen);
+            Assert.Empty(deleted);
+            Assert.Null(git.LastOrigLookupPaths);
+        }
+
+        [Fact]
+        public async Task MainViewModel_OrphanedAutoStash_OfferedOnlyWhenNoMergeInProgress()
+        {
+            var fakeGit = new FakeGitService();
+            fakeGit.Stashes.Add(new GitStashEntry { Ref = "stash@{0}", Hash = "orphan", Message = "On feature/x: " + MainViewModel.AutoStashMessagePrefix + "develop" });
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo"
+            };
+
+            fakeGit.MergeOrRebaseInProgress = true;
+            await mainVm.RefreshRepositoryAsync();
+            Assert.Null(mainVm.OrphanedAutoStash);
+
+            fakeGit.MergeOrRebaseInProgress = false;
+            await mainVm.RefreshRepositoryAsync();
+            Assert.Equal("orphan", mainVm.OrphanedAutoStash?.Hash);
+
+            mainVm.DismissOrphanedAutoStashCommand.Execute(null);
+            await mainVm.RefreshRepositoryAsync();
+            Assert.Null(mainVm.OrphanedAutoStash);
+        }
 
         [Fact]
         public async Task BranchListViewModel_FiltersBranchesCorrectly()
@@ -1177,6 +1450,7 @@ namespace Girt.Tests
             await vm.DiscardSelectedFilesCommand.ExecuteAsync(vm.UnstagedFiles.ToList());
 
             Assert.Equal(1, confirmCallCount);
+            Assert.Equal(1, fakeGit.DiscardCallCount);
             Assert.Empty(vm.UnstagedFiles);
         }
 

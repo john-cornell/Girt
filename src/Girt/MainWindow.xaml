@@ -27,6 +27,9 @@
 
     <Window.InputBindings>
         <KeyBinding Key="F5" Command="{Binding RefreshRepositoryCommand}" />
+        <KeyBinding Key="F8" Command="{Binding NextConflictCommand}" />
+        <KeyBinding Key="F8" Modifiers="Shift" Command="{Binding PreviousConflictCommand}" />
+        <KeyBinding Key="S" Modifiers="Control" Command="{Binding SaveConflictFileCommand}" />
     </Window.InputBindings>
 
     <Grid>
@@ -227,6 +230,57 @@
                             </StackPanel>
                         </Border>
                     </Button>
+
+                    <!-- Update from develop: stash, fast-forward develop from its remote without
+                         checking it out, merge it in, put the stash back. Hidden when there's
+                         no develop/main to update from or we're already on it. -->
+                    <Button Command="{Binding UpdateFromTrunkCommand}"
+                            Style="{StaticResource ToolButtonStyle}"
+                            Padding="0"
+                            Margin="0,0,8,0"
+                            Visibility="{Binding UpdateFromBranchName, Converter={StaticResource NullToVisConverter}}"
+                            ToolTip="Fetch the latest of this branch from its remote and merge it into your current branch. Uncommitted changes are stashed and put back afterwards.">
+                        <Border Background="#268B5CF6"
+                                BorderBrush="#8B5CF6"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="⟳ " Foreground="#8B5CF6" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding UpdateFromBranchName, StringFormat='Update from {0}'}"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           FontWeight="SemiBold"
+                                           FontSize="12"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                    </Button>
+
+                    <!-- An auto-stash left behind by an update that didn't finish inside Girt.
+                         Offered back, never popped on its own. -->
+                    <Border Background="#26F59E0B"
+                            BorderBrush="#F59E0B"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="8,2"
+                            Margin="0,0,8,0"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding OrphanedAutoStash, Converter={StaticResource NullToVisConverter}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="↺ Restore stashed changes"
+                                    Style="{StaticResource ToolButtonStyle}"
+                                    Command="{Binding RestoreOrphanedAutoStashCommand}"
+                                    Padding="4,1"
+                                    FontSize="11"
+                                    ToolTip="{Binding OrphanedAutoStash.Message}" />
+                            <Button Content="✕"
+                                    Style="{StaticResource ToolButtonStyle}"
+                                    Command="{Binding DismissOrphanedAutoStashCommand}"
+                                    Padding="4,1"
+                                    FontSize="10"
+                                    ToolTip="Hide this for now (the stash stays where it is)" />
+                        </StackPanel>
+                    </Border>
 
                     <!-- Working indicator - shown for both the blocking overlay case (IsLoading)
                          and silent background refreshes (IsBackgroundBusy), so there's always
@@ -560,6 +614,10 @@
                                                             <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
                                                             <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
+                                                        <MenuItem Header="⟳ Merge latest into current branch"
+                                                                  Click="OnMergeLatestClicked"
+                                                                  ToolTip="Fetch this branch from its remote (without checking it out) and merge it into your current branch"
+                                                                  Visibility="{Binding IsCurrent, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
                                                         <MenuItem Header="⎇ Rebase current branch on this branch..."
                                                                   Command="{Binding DataContext.RebaseCurrentBranchOnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding}" />
@@ -669,6 +727,10 @@
                                                             <MenuItem Header="Squash and Merge..." Click="OnMergeSquashClicked" />
                                                             <MenuItem Header="Merge (--no-ff)..." Click="OnMergeNoFfClicked" />
                                                         </MenuItem>
+                                                        <MenuItem Header="⟳ Merge latest into current branch"
+                                                                  Click="OnMergeLatestClicked"
+                                                                  ToolTip="Fetch this branch from its remote (without checking it out) and merge it into your current branch"
+                                                                  Visibility="{Binding CanCheckout, Converter={StaticResource BoolToVisConverter}}" />
                                                         <MenuItem Header="📋 Copy Branch Name"
                                                                   Command="{Binding DataContext.CopyBranchNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                   CommandParameter="{Binding Branch}"
@@ -2597,15 +2659,406 @@
             </Border>
         </Grid>
 
-        <!-- MODAL: MERGE CONFLICTS - external-handoff resolution: lists conflicted files with
-             an Ours(yours)/Theirs(incoming) diff preview against the common base for the
-             selected file, a button to open it in your own editor/merge tool, and a per-file
-             "Mark Resolved" once fixed. Continue Merge only enables once every file is marked
-             resolved; Abort Merge rolls the whole merge back (git merge abort). -->
+        <!-- MODAL: CONFLICT EDITOR - Mine | Result | Theirs for each conflicted file. Panes are
+             labelled with branch names (never ours/theirs, which git swaps during a rebase).
+             Each conflict gets use mine / theirs / both buttons, the result is editable, and
+             saving a file with nothing left unresolved stages it. One ListBox row per block
+             keeps the three columns lined up and scrolling together. -->
         <Grid Grid.Row="0" Grid.RowSpan="3"
               Background="#80000000"
               Visibility="{Binding IsMergeConflictDialogOpen, Converter={StaticResource BoolToVisConverter}}">
-            <Border Width="920" Height="620"
+            <Border Margin="24"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="18"
+                    SnapsToDevicePixels="True">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                        <TextBlock Text="{Binding MergeConflictDialogTitle}"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <TextBlock Text="{Binding ConflictProgressText}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,2,0,0" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="250" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Conflicted files -->
+                        <ListBox Grid.Column="0"
+                                 ItemsSource="{Binding MergeConflictFiles}"
+                                 SelectedItem="{Binding SelectedConflictFile}"
+                                 Style="{StaticResource ModernListBoxStyle}"
+                                 ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type models:MergeConflictFile}">
+                                    <Grid Margin="2,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="18" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="✔" FontWeight="Bold"
+                                                   Foreground="#10B981"
+                                                   Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}}" />
+                                        <TextBlock Grid.Column="0" Text="●"
+                                                   Foreground="#F59E0B"
+                                                   Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding Path}"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       FontSize="12" TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding Path}" />
+                                            <TextBlock Text="{Binding ConflictLabel}"
+                                                       Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="10" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding UnresolvedCount}"
+                                                   Foreground="#F59E0B"
+                                                   FontWeight="Bold"
+                                                   FontSize="11"
+                                                   VerticalAlignment="Center"
+                                                   ToolTip="Conflicts left in this file"
+                                                   Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <!-- Editor for the selected file -->
+                        <Grid Grid.Column="2" DataContext="{Binding ConflictEditor}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- Toolbar -->
+                            <Grid Grid.Row="0" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding File.Path}"
+                                               FontWeight="Bold"
+                                               FontSize="13"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding UnresolvedCount, StringFormat='{}{0} conflict(s) left in this file'}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Visibility="{Binding IsTextMerge, Converter={StaticResource BoolToVisConverter}}" />
+                                </StackPanel>
+                                <WrapPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="◂ Prev"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding DataContext.PreviousConflictCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ToolTip="Previous unresolved conflict (Shift+F8)"
+                                            Margin="0,0,4,0" />
+                                    <Button Content="Next ▸"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding DataContext.NextConflictCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ToolTip="Next unresolved conflict (F8)"
+                                            Margin="0,0,12,0" />
+                                    <Button Content="Keep mine (whole file)"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding DataContext.KeepMineWholeFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            Visibility="{Binding CanPickWholeFile, Converter={StaticResource BoolToVisConverter}}"
+                                            Margin="0,0,4,0" />
+                                    <Button Content="Take theirs (whole file)"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding DataContext.TakeTheirsWholeFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            Visibility="{Binding CanPickWholeFile, Converter={StaticResource BoolToVisConverter}}"
+                                            Margin="0,0,12,0" />
+                                    <Button Content="Merge tool…"
+                                            Style="{StaticResource ToolButtonStyle}"
+                                            Command="{Binding DataContext.OpenConflictFileInEditorCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding File}"
+                                            ToolTip="Open this file in your configured merge tool (kdiff3 etc)"
+                                            Margin="0,0,4,0" />
+                                    <Button Content="Save (Ctrl+S)"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Command="{Binding DataContext.SaveConflictFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ToolTip="Writes the result. Once no conflicts are left, the file is staged and marked resolved."
+                                            Visibility="{Binding IsTextMerge, Converter={StaticResource BoolToVisConverter}}" />
+                                </WrapPanel>
+                            </Grid>
+
+                            <!-- Column headers -->
+                            <Grid Grid.Row="1" Margin="0,0,18,4"
+                                  Visibility="{Binding IsTextMerge, Converter={StaticResource BoolToVisConverter}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="{Binding DataContext.ConflictMineLabel, RelativeSource={RelativeSource AncestorType=Window}, StringFormat='MINE · {0}'}"
+                                           FontSize="11" FontWeight="Bold" Foreground="#3B82F6"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="2" Text="RESULT (editable)"
+                                           FontSize="11" FontWeight="Bold"
+                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                                <TextBlock Grid.Column="4"
+                                           Text="{Binding DataContext.ConflictTheirsLabel, RelativeSource={RelativeSource AncestorType=Window}, StringFormat='THEIRS · {0}'}"
+                                           FontSize="11" FontWeight="Bold" Foreground="#8B5CF6"
+                                           TextTrimming="CharacterEllipsis" />
+                            </Grid>
+
+                            <!-- The blocks -->
+                            <ListBox Grid.Row="2"
+                                     x:Name="ConflictBlocksList"
+                                     ItemsSource="{Binding Blocks}"
+                                     Background="{DynamicResource CardBackgroundBrush}"
+                                     BorderBrush="{DynamicResource BorderBrush}"
+                                     BorderThickness="1"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"
+                                     VirtualizingPanel.ScrollUnit="Pixel"
+                                     Visibility="{Binding IsTextMerge, Converter={StaticResource BoolToVisConverter}}">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Focusable" Value="False" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <ContentPresenter />
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type models:ConflictBlock}">
+                                        <Grid>
+                                            <!-- Lines git merged on its own -->
+                                            <Grid Margin="6,0"
+                                                  Visibility="{Binding IsConflict, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="8" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="8" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="{Binding MineText}"
+                                                           FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBox Grid.Column="2" Text="{Binding ResultText, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                         AcceptsReturn="True" AcceptsTab="True"
+                                                         Background="Transparent" BorderThickness="0" Padding="0"
+                                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                                         CaretBrush="{DynamicResource TextPrimaryBrush}" />
+                                                <TextBlock Grid.Column="4" Text="{Binding TheirsText}"
+                                                           FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource TextMutedBrush}" />
+                                            </Grid>
+
+                                            <!-- A conflict -->
+                                            <Border Margin="2,6" Padding="4" CornerRadius="4"
+                                                    Visibility="{Binding IsConflict, Converter={StaticResource BoolToVisConverter}}">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="BorderBrush" Value="#F59E0B" />
+                                                        <Setter Property="BorderThickness" Value="1" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsResolved}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="#10B981" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                                <Setter Property="BorderThickness" Value="3" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="8" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="8" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <!-- Mine -->
+                                                    <Border Grid.Column="0" Background="#1A3B82F6" CornerRadius="3" Padding="6,4">
+                                                        <StackPanel>
+                                                            <Button Content="Use mine ▸"
+                                                                    Style="{StaticResource ToolButtonStyle}"
+                                                                    Command="{Binding UseMineCommand}"
+                                                                    HorizontalAlignment="Right"
+                                                                    FontSize="11" Padding="6,1" Margin="0,0,0,4" />
+                                                            <TextBlock Text="{Binding MineText}"
+                                                                       FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                       Visibility="{Binding MineIsEmpty, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                            <TextBlock Text="(nothing here - these lines were deleted on this side)"
+                                                                       FontStyle="Italic" FontSize="11"
+                                                                       Foreground="{DynamicResource TextMutedBrush}"
+                                                                       Visibility="{Binding MineIsEmpty, Converter={StaticResource BoolToVisConverter}}" />
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <!-- Result -->
+                                                    <StackPanel Grid.Column="2">
+                                                        <WrapPanel Margin="0,0,0,4">
+                                                            <Button Content="Mine + theirs"
+                                                                    Style="{StaticResource ToolButtonStyle}"
+                                                                    Command="{Binding UseMineThenTheirsCommand}"
+                                                                    ToolTip="Keep both, mine first"
+                                                                    FontSize="11" Padding="6,1" Margin="0,0,4,0" />
+                                                            <Button Content="Theirs + mine"
+                                                                    Style="{StaticResource ToolButtonStyle}"
+                                                                    Command="{Binding UseTheirsThenMineCommand}"
+                                                                    ToolTip="Keep both, theirs first"
+                                                                    FontSize="11" Padding="6,1" Margin="0,0,4,0" />
+                                                            <Button Content="↺ Reset"
+                                                                    Style="{StaticResource ToolButtonStyle}"
+                                                                    Command="{Binding ResetChoiceCommand}"
+                                                                    ToolTip="Back to unresolved"
+                                                                    FontSize="11" Padding="6,1"
+                                                                    Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}}" />
+                                                        </WrapPanel>
+                                                        <Grid>
+                                                            <TextBox Text="{Binding ResultText, UpdateSourceTrigger=PropertyChanged}"
+                                                                     FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                                     AcceptsReturn="True" AcceptsTab="True"
+                                                                     MinHeight="36" Padding="4"
+                                                                     Background="{DynamicResource WindowBackgroundBrush}"
+                                                                     BorderBrush="{DynamicResource BorderBrush}"
+                                                                     Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                     CaretBrush="{DynamicResource TextPrimaryBrush}" />
+                                                            <TextBlock Text="Pick a side, or type the result here"
+                                                                       IsHitTestVisible="False"
+                                                                       FontStyle="Italic" FontSize="11" Margin="8,6,0,0"
+                                                                       Foreground="{DynamicResource TextMutedBrush}"
+                                                                       Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                        </Grid>
+                                                    </StackPanel>
+
+                                                    <!-- Theirs -->
+                                                    <Border Grid.Column="4" Background="#1A8B5CF6" CornerRadius="3" Padding="6,4">
+                                                        <StackPanel>
+                                                            <Button Content="◂ Use theirs"
+                                                                    Style="{StaticResource ToolButtonStyle}"
+                                                                    Command="{Binding UseTheirsCommand}"
+                                                                    HorizontalAlignment="Left"
+                                                                    FontSize="11" Padding="6,1" Margin="0,0,0,4" />
+                                                            <TextBlock Text="{Binding TheirsText}"
+                                                                       FontFamily="Consolas, monospace" FontSize="12" TextWrapping="Wrap"
+                                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                       Visibility="{Binding TheirsIsEmpty, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}" />
+                                                            <TextBlock Text="(nothing here - these lines were deleted on this side)"
+                                                                       FontStyle="Italic" FontSize="11"
+                                                                       Foreground="{DynamicResource TextMutedBrush}"
+                                                                       Visibility="{Binding TheirsIsEmpty, Converter={StaticResource BoolToVisConverter}}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Grid>
+                                            </Border>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <!-- Files with nothing to merge line by line: delete/modify, binary, errors -->
+                            <Border Grid.Row="2"
+                                    Background="{DynamicResource CardBackgroundBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="24"
+                                    Visibility="{Binding IsTextMerge, Converter={StaticResource BoolToVisConverter}, ConverterParameter=Invert}">
+                                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520">
+                                    <TextBlock Text="{Binding Message}"
+                                               FontSize="14"
+                                               TextWrapping="Wrap"
+                                               TextAlignment="Center"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               Margin="0,0,0,16" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <Button Content="Keep file"
+                                                Style="{StaticResource PrimaryButtonStyle}"
+                                                Command="{Binding DataContext.KeepConflictedFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Visibility="{Binding CanKeepFile, Converter={StaticResource BoolToVisConverter}}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Delete file"
+                                                Style="{StaticResource StandardButtonStyle}"
+                                                Command="{Binding DataContext.DeleteConflictedFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Visibility="{Binding CanDeleteFile, Converter={StaticResource BoolToVisConverter}}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </Grid>
+
+                    <Grid Grid.Row="2" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="F8 next conflict · Shift+F8 previous · Ctrl+S save"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <!-- Always available regardless of git state - the merge/rebase being
+                                 tracked may already have been finished or aborted outside Girt
+                                 (another tool, another terminal), in which case Abort/Continue
+                                 would just fail and leave this dialog with no way out. -->
+                            <Button Content="Close"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding CloseMergeConflictDialogCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="{Binding AbortMergeButtonLabel}"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding AbortMergeCommand}"
+                                    Foreground="#EF4444"
+                                    Margin="0,0,8,0" />
+                            <Button Content="{Binding ContinueMergeButtonLabel}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding ContinueMergeCommand}"
+                                    IsEnabled="{Binding CanContinueMerge}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- MODAL: .ORIG CLEANUP - after a conflicted merge finishes, offers to delete the
+             merge tool's <file>.orig backups next to the files that conflicted. Comes after
+             the conflict modal so it sits on top if a stash restore reopens that one. -->
+        <Grid Grid.Row="0" Grid.RowSpan="3"
+              Background="#80000000"
+              Visibility="{Binding IsOrigCleanupDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+            <Border Width="520"
                     Background="{DynamicResource WindowBackgroundBrush}"
                     BorderBrush="{DynamicResource BorderAccentBrush}"
                     BorderThickness="1"
@@ -2617,124 +3070,61 @@
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.4" />
                 </Border.Effect>
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0"
-                               Text="{Binding MergeConflictDialogTitle}"
+                <StackPanel>
+                    <TextBlock Text="🧹 Delete .orig backup files?"
                                FontSize="16"
                                FontWeight="Bold"
                                Foreground="{DynamicResource TextPrimaryBrush}"
-                               Margin="0,0,0,4" />
-                    <TextBlock Grid.Row="1"
-                               Text="Resolve each file in your own editor, then mark it resolved. Continue Merge finishes the merge once every file is resolved."
+                               Margin="0,0,0,8" />
+                    <TextBlock Text="Your merge tool left these backups behind. They go to the Recycle Bin."
                                FontSize="12"
                                TextWrapping="Wrap"
                                Foreground="{DynamicResource TextSecondaryBrush}"
-                               Margin="0,0,0,14" />
-
-                    <Grid Grid.Row="2">
+                               Margin="0,0,0,10" />
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="8"
+                            MaxHeight="220"
+                            Margin="0,0,0,12">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding OrigCleanupFiles}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   FontFamily="Consolas, monospace"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Margin="0,1" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Border>
+                    <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="260" />
-                            <ColumnDefinition Width="8" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-
-                        <!-- Conflicted Files List -->
-                        <ListBox Grid.Column="0"
-                                 ItemsSource="{Binding MergeConflictFiles}"
-                                 SelectedItem="{Binding SelectedConflictFile}"
-                                 Style="{StaticResource ModernListBoxStyle}"
-                                 ItemContainerStyle="{StaticResource BranchListBoxItemStyle}">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate DataType="{x:Type models:MergeConflictFile}">
-                                    <Grid Margin="2,4">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="✔" FontWeight="Bold"
-                                                   Foreground="#10B981" Margin="0,0,6,0"
-                                                   Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisConverter}}" />
-                                        <StackPanel Grid.Column="1">
-                                            <TextBlock Text="{Binding Path}"
-                                                       Foreground="{DynamicResource TextPrimaryBrush}"
-                                                       FontSize="12" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding ConflictLabel}"
-                                                       Foreground="{DynamicResource TextMutedBrush}"
-                                                       FontSize="10" />
-                                        </StackPanel>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-
-                        <!-- Ours / Theirs Diff Preview for the selected conflicted file -->
-                        <Grid Grid.Column="2" Visibility="{Binding SelectedConflictFile, Converter={StaticResource NullToVisConverter}}">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-
-                            <Grid Grid.Row="0" Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="YOURS (against common base)"
-                                           FontSize="11" FontWeight="Bold"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           VerticalAlignment="Center" />
-                                <Button Grid.Column="1" Content="Open in Editor"
-                                        Style="{StaticResource StandardButtonStyle}"
-                                        Command="{Binding OpenConflictFileInEditorCommand}"
-                                        CommandParameter="{Binding SelectedConflictFile}" />
-                            </Grid>
-                            <controls:DiffViewerControl Grid.Row="1" DataContext="{Binding OursDiff}" />
-
-                            <TextBlock Grid.Row="2" Text="THEIRS (against common base)"
-                                       FontSize="11" FontWeight="Bold"
-                                       Foreground="{DynamicResource TextSecondaryBrush}"
-                                       Margin="0,10,0,4" />
-                            <controls:DiffViewerControl Grid.Row="3" DataContext="{Binding TheirsDiff}" />
-
-                            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                                <Button Content="Mark Resolved"
-                                        Style="{StaticResource PrimaryButtonStyle}"
-                                        Command="{Binding MarkConflictFileResolvedCommand}"
-                                        CommandParameter="{Binding SelectedConflictFile}" />
-                            </StackPanel>
-                        </Grid>
+                        <CheckBox Grid.Column="0"
+                                  Content="Don't ask again"
+                                  IsChecked="{Binding OrigCleanupDontAskAgain}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                  VerticalAlignment="Center"
+                                  ToolTip="Remembers this choice. Change it back any time in Settings." />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Button Content="Keep"
+                                    Style="{StaticResource StandardButtonStyle}"
+                                    Command="{Binding ConfirmOrigCleanupKeepCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="Delete"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Command="{Binding ConfirmOrigCleanupDeleteCommand}" />
+                        </StackPanel>
                     </Grid>
-
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-                        <!-- Always available regardless of git state - the merge/rebase being
-                             tracked may already have been finished or aborted outside Girt
-                             (another tool, another terminal), in which case Abort/Continue
-                             would just fail and leave this dialog with no way out. -->
-                        <Button Content="Close"
-                                Style="{StaticResource StandardButtonStyle}"
-                                Command="{Binding CloseMergeConflictDialogCommand}"
-                                Margin="0,0,8,0" />
-                        <Button Content="{Binding AbortMergeButtonLabel}"
-                                Style="{StaticResource StandardButtonStyle}"
-                                Command="{Binding AbortMergeCommand}"
-                                Foreground="#EF4444"
-                                Margin="0,0,8,0" />
-                        <Button Content="{Binding ContinueMergeButtonLabel}"
-                                Style="{StaticResource PrimaryButtonStyle}"
-                                Command="{Binding ContinueMergeCommand}"
-                                IsEnabled="{Binding CanContinueMerge}" />
-                    </StackPanel>
-                </Grid>
+                </StackPanel>
             </Border>
         </Grid>
 
@@ -3035,6 +3425,18 @@
                                       Foreground="{DynamicResource TextPrimaryBrush}"
                                       Margin="0,0,0,6"
                                       ToolTip="The small chevron next to a folder always toggles on one click regardless of this setting - this only controls clicking the folder row itself." />
+
+                            <TextBlock Text="MERGING" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
+                            <TextBlock Text="After a merge, .orig backup files left by the merge tool:"
+                                       FontSize="12" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,4" />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <RadioButton GroupName="OrigCleanup" Content="Ask" IsChecked="{Binding Settings.OrigCleanupAsk}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,16,0" />
+                                <RadioButton GroupName="OrigCleanup" Content="Always delete" IsChecked="{Binding Settings.OrigCleanupAlwaysDelete}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,16,0" />
+                                <RadioButton GroupName="OrigCleanup" Content="Keep" IsChecked="{Binding Settings.OrigCleanupKeep}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}" />
+                            </StackPanel>
 
                             <TextBlock Text="DIAGNOSTICS" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,16,0,6" />
                             <CheckBox Content="Log every git command's timing (not just slow ones)"

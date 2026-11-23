@@ -28,6 +28,8 @@
 - **⑂ Recent Branch Switcher**: Click the branch pill to jump to any of the last 10 local branches you checked out (read from the HEAD reflog; deleted branches are skipped).
 - **📁 Recent Repository Switcher**: Click the repository pill to switch to a recently opened repository.
 - **>_ Git Bash**: One click opens a Git Bash terminal in the current repository.
+- **⤵ Update from develop**: One click brings the latest trunk (`develop`, `main`, `master` or `trunk`, whichever exists first) into the current branch. Girt stashes your uncommitted work, fast-forwards the local trunk from origin without checking it out, merges it in, then puts your work back. Right-click any local branch for "Merge latest '<branch>' into current" to do the same with another branch.
+- **Branch Sidebar Memory**: The branch filter text and which sections and folders are collapsed are remembered per repository. Filter boxes have a clear (×) button.
 - **Big-Repo Performance**: Stays responsive on repositories with tens of thousands of files and thousands of refs (virtualized lists, fsmonitor/untracked cache enabled automatically, refresh skipped when nothing changed).
 
 ### 📝 Streamlined Working Tree & Staging
@@ -38,6 +40,15 @@
 - **📦 Stash Staged Changes**: Stash staged files (`git stash push --staged`) without touching your unstaged work.
 - **📥 Pop Top Stash**: Instant one-click restore of your most recent stash (`git stash pop`).
 - **Undo / Soft & Hard Reset**: Safely undo or reset HEAD (`HEAD~1` soft or hard) with commit preview.
+- **Multi-Select Stage / Discard**: Select several files (Ctrl/Shift-click) and stage or discard them all at once. Discard asks once for the whole selection and runs as a single git command.
+
+### 🔀 Merge Conflict Editor
+- **3-Pane Mine | Result | Theirs**: Resolve conflicts inside Girt. Panes are labelled with real branch names, never "ours/theirs", and "Mine" is always your own work, even during a rebase.
+- **Per-Chunk Picks**: Take mine, theirs, both (either order), or type your own text. F8 jumps to the next conflict.
+- **Whole-File Picks**: Keep mine / Take theirs resolves a file in one click.
+- **Auto-Stage on Save**: A file with every chunk resolved is staged when saved. Girt refuses to stage a file that still has conflict markers.
+- **Byte-Exact**: Line endings, BOM and encoding are kept exactly as they were.
+- **.orig Cleanup**: After a conflicted merge finishes, Girt offers to send the merge tool's `.orig` backups to the Recycle Bin. Choose Ask / Always delete / Keep in Settings.
 
 ### 🎨 Dark / Light Mode
 - Modern dark and light themes with persistent settings.

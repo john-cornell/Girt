@@ -217,10 +217,58 @@ If a new interactive confirmation is genuinely worth unit-testing (not just a on
 `MessageBox.Show`), add the injectable-delegate pattern for it *at the same time* you write the
 first test that would otherwise hit it directly - don't discover this the hard way per-command.
 
+## 14. Stashes are tracked by hash, never by `stash@{0}`
+
+"Update from develop" (`MergeLatestIntoCurrentAsync`) auto-stashes with the message prefix
+`MainViewModel.AutoStashMessagePrefix` and pops it back with `StashPopByHashAsync`. Anything else
+can push a stash in between (the user in a terminal, another tool), so `stash@{0}` is not "ours".
+Same rule for dropping (`DropStashByHashAsync`). The stash waits while a merge is conflicted
+(`_pendingAutoStashHash`) and goes back on finish *or* abort. If it's ever left behind, the
+toolbar offers it back (`OrphanedAutoStash`) - **never pop one automatically.**
+
+The local trunk is updated with `git fetch <remote> <merge>:refs/heads/<branch>`, not a checkout +
+pull. fetch only fast-forwards a refspec like that, so a trunk with its own unpushed commits comes
+back as `FastForwardResult.Diverged` instead of being rewritten.
+
+## 15. The conflict editor: "mine" is always the user's work, and bytes must round-trip
+
+- Rebase swaps git's stages (stage 2 "ours" = the branch being rebased onto, stage 3 = the
+  user's commit). Everything goes through `MineIsTheirsStage` in `MainViewModel`, including the
+  whole-file `checkout --ours/--theirs` pick. Pane labels are branch names, never ours/theirs.
+- File content is read with `RunGitForBytesAsync` (raw stdout), **not** the line-based text runner,
+  which rewrites line endings. `ConflictDocument` keeps the BOM, the encoding (strict UTF-8, else
+  Latin-1 so untouched bytes survive), and each block's own line ending. Only text the user
+  *typed* gets its line endings normalised.
+- `git merge-file --diff3 --marker-size=32` makes the conflict regions, so the parser never
+  depends on the user's `merge.conflictStyle`, and a `=======` line in a markdown file can't be
+  mistaken for a separator.
+- Picks in a half-resolved file live only in `ConflictEditorViewModel`'s per-path cache (a
+  half-resolved file can't be written without markers). Forget a path whenever it's resolved
+  some other way (whole-file pick, merge tool, Mark Resolved), and forget everything when a new
+  conflict session or rebase step starts - the stages are different then.
+
+## 16. `.orig` cleanup only ever touches untracked `<conflicted path>.orig`
+
+`GetUntrackedOrigBackupsAsync` checks exactly those paths, and `ls-files` decides "untracked".
+Deletes go to the Recycle Bin via the injectable `DeleteFilesAction`. The setting
+(`OrigFileCleanup`) has one owner, `SettingsViewModel`, which the prompt's "Don't ask again"
+writes to (rule 11).
+
+## 17. Batch git writes into one command, never a loop of commands
+
+Any git command that writes the index (`restore`, `add`, `checkout --`) takes `.git/index.lock`.
+So does `git diff`, which opportunistically refreshes stat info. Removing a selected file from a
+list moves the selection, which starts a fire-and-forget `git diff` for the next file. In a
+per-file loop that diff lands between the writes and every one after the first dies on
+"index.lock: File exists". Multi-file actions pass all paths to one git call
+(`--pathspec-from-file` + `--pathspec-file-nul`, with `--literal-pathspecs`) and update the list
+**after** git returns. "Discard Selected" does this. "Stage Selected" still loops and is a
+candidate for the same fix.
+
 ---
 
 **Before shipping a change to any of the files above:** rebuild, run the full test suite (currently
-75 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
+157 tests, should stay green), and actually feel the app for lag on a large real repo — the tests
 lock in correctness, not perceived speed. If you introduce a `Clear()` on a virtualized list's
 bound collection, a `RefreshRepositoryAsync()` call after a fast local action, or drop a
 `ConfigureAwait(false)` from `GitCliService`, you are reintroducing a bug that was deliberately

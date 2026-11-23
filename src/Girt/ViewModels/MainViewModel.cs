@@ -58,7 +58,11 @@ namespace Girt.ViewModels
         private string _windowTitle = $"Girt v{AppVersion} - Modern Git Client";
 
         partial void OnRepositoryNameChanged(string value) => UpdateWindowTitle();
-        partial void OnCurrentBranchChanged(string value) => UpdateWindowTitle();
+        partial void OnCurrentBranchChanged(string value)
+        {
+            UpdateWindowTitle();
+            RefreshUpdateFromBranchName();
+        }
         partial void OnRepositoryPathChanged(string value) => UpdateWindowTitle();
 
         private void UpdateWindowTitle()
@@ -179,11 +183,38 @@ namespace Girt.ViewModels
         [ObservableProperty]
         private bool _canContinueMerge;
 
-        // The conflict dialog is shared by three producers (an explicit merge, a plain pull,
-        // and a rebase pull) - a rebase leaves the repo in a different git state than a merge
-        // (mid-rebase vs mid-merge), so Abort/Continue need different underlying commands, and
-        // the dialog's own title/button labels are kept in sync with which one is active.
-        private bool _conflictIsRebase;
+        // The conflict dialog is shared by several producers (merge, pull, rebase pull, the
+        // update-from-branch flow and its stash restore). Each leaves git in a different state
+        // (mid-merge, mid-rebase, conflicted stash pop), so Abort/Continue need different
+        // commands, and the title/button labels follow whichever one is active.
+        private ConflictOperation _conflictOperation;
+
+        // Every path that conflicted during this operation, across rebase steps too - used to
+        // find the merge tool's .orig backups once it's finished.
+        private readonly HashSet<string> _conflictedPathsThisOperation = new(StringComparer.OrdinalIgnoreCase);
+
+        // StashPop only: the stash being restored, dropped once every file is resolved.
+        private string? _conflictStashHash;
+
+        // Update-from-branch only: the auto-stash to put back once the merge is finished or
+        // aborted. Lives across Close, so closing the dialog mid-merge doesn't lose track of it.
+        private string? _pendingAutoStashHash;
+
+        // Branch names for each side, never "ours/theirs" - git swaps those during a rebase.
+        [ObservableProperty]
+        private string _conflictMineLabel = "Mine";
+
+        [ObservableProperty]
+        private string _conflictTheirsLabel = "Theirs";
+
+        [ObservableProperty]
+        private string _conflictProgressText = string.Empty;
+
+        private void UpdateConflictProgress()
+        {
+            var resolved = MergeConflictFiles.Count(f => f.IsResolved);
+            ConflictProgressText = $"{resolved} of {MergeConflictFiles.Count} file(s) resolved";
+        }
 
         [ObservableProperty]
         private string _mergeConflictDialogTitle = "⚠ Merge Conflicts";
@@ -195,10 +226,10 @@ namespace Girt.ViewModels
         private string _abortMergeButtonLabel = "Abort Merge";
 
         public ObservableCollection<MergeConflictFile> MergeConflictFiles { get; } = new();
-        public SimpleDiffViewModel OursDiff { get; } = new();
-        public SimpleDiffViewModel TheirsDiff { get; } = new();
+        public ConflictEditorViewModel ConflictEditor { get; }
 
-        partial void OnSelectedConflictFileChanged(MergeConflictFile? value) => _ = LoadConflictDiffsAsync(value);
+        partial void OnSelectedConflictFileChanged(MergeConflictFile? oldValue, MergeConflictFile? newValue) =>
+            _ = SwitchConflictFileAsync(newValue);
 
         // Push Rejected Dialog State - shown when a push fails specifically because the remote
         // has moved on (non-fast-forward), mirroring Git Extensions' "Pull latest changes from
@@ -256,6 +287,7 @@ namespace Girt.ViewModels
                 _themeService.LoadBranchSidebarState,
                 _themeService.SaveBranchSidebarState);
             CommitHistory = new CommitHistoryViewModel(_gitService, () => RepositoryPath, OnCommitSelected);
+            ConflictEditor = new ConflictEditorViewModel(_gitService, () => RepositoryPath);
             CommitDetail = new CommitDetailViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);
             UnpushedChanges = new UnpushedChangesViewModel(_gitService, () => RepositoryPath, () => IgnoreWhitespaceInDiffs);
             WorkingChanges = new WorkingChangesViewModel(
@@ -280,7 +312,9 @@ namespace Girt.ViewModels
                 _themeService.LoadFolderExpandOnSingleClick(),
                 _themeService.SaveFolderExpandOnSingleClick,
                 _themeService.LoadEnableTimingLogs(),
-                _themeService.SaveEnableTimingLogs);
+                _themeService.SaveEnableTimingLogs,
+                _themeService.LoadOrigFileCleanup(),
+                _themeService.SaveOrigFileCleanup);
 
             _pushPillOpensReview = _themeService.LoadPushPillOpensReview();
             _autoRefresh = _themeService.LoadAutoRefresh();
@@ -738,6 +772,7 @@ namespace Girt.ViewModels
                 var branchListTask = BranchList.LoadBranchesAsync();
                 await Task.WhenAll(statusTask, branchListTask);
                 RepoStatus = await statusTask;
+                RefreshUpdateFromBranchName();
             }
             catch
             {
@@ -759,6 +794,8 @@ namespace Girt.ViewModels
             CurrentBranch = await branchTask ?? "-";
             RepoStatus = await statusTask;
             CommitHistory.SetBranches(BranchList.AllBranches, CurrentBranch);
+            RefreshUpdateFromBranchName();
+            await RefreshOrphanedAutoStashAsync();
 
             // show-ref gives HEAD's hash but not which branch it's on - switching between two
             // branches at the same commit only moves the graph's "HEAD ->" label, so the branch
@@ -1223,16 +1260,8 @@ namespace Girt.ViewModels
                 var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
                 if (conflicts.Count > 0)
                 {
-                    _conflictIsRebase = rebase;
-                    MergeConflictDialogTitle = rebase ? "⚠ Rebase Conflicts" : "⚠ Merge Conflicts";
-                    ContinueMergeButtonLabel = rebase ? "Continue Rebase" : "Continue Merge";
-                    AbortMergeButtonLabel = rebase ? "Abort Rebase" : "Abort Merge";
-
-                    MergeConflictFiles.Clear();
-                    foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
-                    SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
-                    CanContinueMerge = false;
-                    IsMergeConflictDialogOpen = true;
+                    var incoming = RepoStatus?.UpstreamBranch is { Length: > 0 } upstream ? upstream : "remote";
+                    OpenConflictDialog(rebase ? ConflictOperation.Rebase : ConflictOperation.Merge, conflicts, CurrentBranch, incoming);
                     StatusMessage = $"{(rebase ? "Rebase" : "Pull")} stopped - {conflicts.Count} file(s) have conflicts.";
                 }
                 else
@@ -1543,16 +1572,9 @@ namespace Girt.ViewModels
             var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
             if (conflicts.Count > 0)
             {
-                _conflictIsRebase = false;
-                MergeConflictDialogTitle = "⚠ Merge Conflicts";
-                ContinueMergeButtonLabel = "Continue Merge";
-                AbortMergeButtonLabel = "Abort Merge";
-
-                MergeConflictFiles.Clear();
-                foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
-                SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
-                CanContinueMerge = false;
-                IsMergeConflictDialogOpen = true;
+                // A commit merge has no branch name, so show its short hash instead
+                var incoming = targetRef.Length == 40 && targetRef.All(Uri.IsHexDigit) ? targetRef[..8] : targetRef;
+                OpenConflictDialog(ConflictOperation.Merge, conflicts, CurrentBranch, incoming);
                 StatusMessage = $"Merge stopped - {conflicts.Count} file(s) have conflicts.";
             }
             else
@@ -1563,15 +1585,174 @@ namespace Girt.ViewModels
             await RefreshPillsAndWorkingChangesAsync();
         }
 
-        private async Task LoadConflictDiffsAsync(MergeConflictFile? file)
-        {
-            OursDiff.SetDiff("");
-            TheirsDiff.SetDiff("");
-            if (file == null || string.IsNullOrEmpty(RepositoryPath)) return;
+        // ================= CONFLICT EDITOR =================
+        // Rebase swaps git's stages: stage 2 ("ours") is the branch being rebased onto, and the
+        // user's own commit is stage 3. Mine always means the user's work.
+        private bool MineIsTheirsStage => _conflictOperation == ConflictOperation.Rebase;
 
-            var (oursDiff, theirsDiff) = await _gitService.GetConflictDiffsAsync(RepositoryPath, file.Path);
-            OursDiff.SetDiff(oursDiff);
-            TheirsDiff.SetDiff(theirsDiff);
+        private async Task SwitchConflictFileAsync(MergeConflictFile? file)
+        {
+            // Leaving a fully resolved file saves it, same as Ctrl+S
+            if (ConflictEditor.IsDirty && ConflictEditor.File is { } leaving && leaving != file)
+            {
+                await SaveConflictFileCoreAsync();
+            }
+
+            if (file == null)
+            {
+                ConflictEditor.Clear();
+                return;
+            }
+            await ConflictEditor.LoadAsync(file, MineIsTheirsStage, OneSidedConflictMessage(file));
+            if (_selectLastConflictAfterLoad)
+            {
+                _selectLastConflictAfterLoad = false;
+                ConflictEditor.SelectFirstOrLastConflict(last: true);
+            }
+        }
+
+        private bool _selectLastConflictAfterLoad;
+
+        // Plain words for conflicts there's nothing to merge line by line in. git's "us" is
+        // stage 2, which is the other branch during a rebase.
+        private string? OneSidedConflictMessage(MergeConflictFile file)
+        {
+            var us = MineIsTheirsStage ? ConflictTheirsLabel : ConflictMineLabel;
+            var them = MineIsTheirsStage ? ConflictMineLabel : ConflictTheirsLabel;
+            return file.ConflictType switch
+            {
+                MergeConflictType.DeletedByUs => $"{us} deleted this file, {them} changed it.",
+                MergeConflictType.DeletedByThem => $"{them} deleted this file, {us} changed it.",
+                MergeConflictType.AddedByUs => $"{us} added this file, and it clashes with a change on {them}.",
+                MergeConflictType.AddedByThem => $"{them} added this file, and it clashes with a change on {us}.",
+                MergeConflictType.BothDeleted => "Both sides deleted this file.",
+                _ => null
+            };
+        }
+
+        private void OnConflictFileResolved(MergeConflictFile file)
+        {
+            file.IsResolved = true;
+            file.UnresolvedCount = 0;
+            CanContinueMerge = MergeConflictFiles.Count > 0 && MergeConflictFiles.All(f => f.IsResolved);
+            UpdateConflictProgress();
+
+            // Move straight on to the next file that still needs work. If there isn't one,
+            // reload this one so the editor isn't left showing stale conflicts that a later
+            // save would write over a whole-file pick.
+            if (SelectedConflictFile == file && MergeConflictFiles.FirstOrDefault(f => !f.IsResolved) is { } next)
+            {
+                SelectedConflictFile = next;
+            }
+            else if (ConflictEditor.File == file)
+            {
+                _ = SwitchConflictFileAsync(file);
+            }
+            StatusMessage = CanContinueMerge
+                ? $"All files resolved - {ContinueMergeButtonLabel} when ready."
+                : $"Resolved {file.Path}.";
+        }
+
+        private async Task SaveConflictFileCoreAsync()
+        {
+            var file = ConflictEditor.File;
+            var error = await ConflictEditor.SaveAsync();
+            if (error != null)
+            {
+                ReportErrorAction(error, "Save");
+                return;
+            }
+            if (file != null && file.IsResolved) OnConflictFileResolved(file);
+        }
+
+        [RelayCommand]
+        public Task SaveConflictFileAsync() =>
+            IsMergeConflictDialogOpen ? SaveConflictFileCoreAsync() : Task.CompletedTask;
+
+        [RelayCommand]
+        public Task KeepMineWholeFileAsync() => PickWholeFileAsync(mine: true);
+
+        [RelayCommand]
+        public Task TakeTheirsWholeFileAsync() => PickWholeFileAsync(mine: false);
+
+        private async Task PickWholeFileAsync(bool mine)
+        {
+            if (ConflictEditor.File is not { } file || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            // During a rebase "mine" lives in git's --theirs stage
+            var oursStage = mine != MineIsTheirsStage;
+            var (success, output) = await _gitService.CheckoutConflictSideAsync(RepositoryPath, file.Path, oursStage);
+            if (!success)
+            {
+                ReportErrorAction($"Couldn't take {(mine ? ConflictMineLabel : ConflictTheirsLabel)}'s version of {file.Path}:\n{output}", "Resolve File");
+                return;
+            }
+            ConflictEditor.Forget(file.Path);
+            ConflictEditor.IsDirty = false;
+            OnConflictFileResolved(file);
+        }
+
+        [RelayCommand]
+        public async Task KeepConflictedFileAsync()
+        {
+            if (ConflictEditor.File is not { } file || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var (success, output) = await _gitService.StageFileAsync(RepositoryPath, file.Path);
+            if (!success)
+            {
+                ReportErrorAction($"Couldn't keep {file.Path}:\n{output}", "Resolve File");
+                return;
+            }
+            OnConflictFileResolved(file);
+        }
+
+        [RelayCommand]
+        public async Task DeleteConflictedFileAsync()
+        {
+            if (ConflictEditor.File is not { } file || string.IsNullOrEmpty(RepositoryPath)) return;
+
+            var (success, output) = await _gitService.RemoveConflictedFileAsync(RepositoryPath, file.Path);
+            if (!success)
+            {
+                ReportErrorAction($"Couldn't delete {file.Path}:\n{output}", "Resolve File");
+                return;
+            }
+            ConflictEditor.Forget(file.Path);
+            OnConflictFileResolved(file);
+        }
+
+        // F8 / Shift+F8: next or previous unresolved conflict, rolling over into the next or
+        // previous file that still has some.
+        [RelayCommand]
+        public void NextConflict()
+        {
+            if (IsMergeConflictDialogOpen) MoveToConflict(+1);
+        }
+
+        [RelayCommand]
+        public void PreviousConflict()
+        {
+            if (IsMergeConflictDialogOpen) MoveToConflict(-1);
+        }
+
+        private void MoveToConflict(int direction)
+        {
+            if (ConflictEditor.MoveToConflict(direction)) return;
+
+            var files = MergeConflictFiles.ToList();
+            var start = SelectedConflictFile == null ? -1 : files.IndexOf(SelectedConflictFile);
+            for (var step = 1; step <= files.Count; step++)
+            {
+                var index = ((start + direction * step) % files.Count + files.Count) % files.Count;
+                var candidate = files[index];
+                if (candidate.IsResolved || candidate == SelectedConflictFile) continue;
+
+                // Setting the selection loads the file (OnSelectedConflictFileChanged). Going
+                // backwards should land on that file's last conflict, not its first.
+                _selectLastConflictAfterLoad = direction < 0;
+                SelectedConflictFile = candidate;
+                return;
+            }
         }
 
         // Overridable so tests can auto-confirm without popping a real MessageBox - see
@@ -1622,12 +1803,18 @@ namespace Girt.ViewModels
                 return;
             }
 
-            // The tool blocks until closed and may have resolved the conflict (or not) -
-            // refresh the Ours/Theirs preview so it reflects whatever's on disk now instead of
-            // showing the stale pre-merge-tool diff.
-            if (SelectedConflictFile == file)
+            // The tool blocks until closed. git mergetool stages the file itself when the tool
+            // says it's resolved, so if it's no longer conflicted it's done. Otherwise reload,
+            // the tool may have changed things.
+            ConflictEditor.Forget(file.Path);
+            var stillConflicted = (await _gitService.GetConflictedFilesAsync(RepositoryPath)).Any(c => c.Path == file.Path);
+            if (!stillConflicted)
             {
-                await LoadConflictDiffsAsync(file);
+                OnConflictFileResolved(file);
+            }
+            else if (SelectedConflictFile == file)
+            {
+                await SwitchConflictFileAsync(file);
             }
         }
 
@@ -1646,29 +1833,87 @@ namespace Girt.ViewModels
             var (success, output) = await _gitService.StageFileAsync(RepositoryPath, file.Path);
             if (success)
             {
-                file.IsResolved = true;
-                CanContinueMerge = MergeConflictFiles.Count > 0 && MergeConflictFiles.All(f => f.IsResolved);
+                ConflictEditor.Forget(file.Path);
+                OnConflictFileResolved(file);
             }
             else
             {
-                MessageBox.Show($"Could not stage '{file.Path}':\n{output}", "Mark Resolved", MessageBoxButton.OK, MessageBoxImage.Error);
+                ReportErrorAction($"Could not stage '{file.Path}':\n{output}", "Mark Resolved");
             }
         }
+
+        private void OpenConflictDialog(ConflictOperation operation, IReadOnlyList<MergeConflictFile> conflicts, string mineLabel, string theirsLabel)
+        {
+            _conflictOperation = operation;
+            _conflictedPathsThisOperation.Clear();
+            ConflictEditor.ForgetAll();
+            ConflictMineLabel = mineLabel;
+            ConflictTheirsLabel = theirsLabel;
+            (MergeConflictDialogTitle, ContinueMergeButtonLabel, AbortMergeButtonLabel) = operation switch
+            {
+                ConflictOperation.Rebase => ($"Rebasing {mineLabel} onto {theirsLabel}", "Continue Rebase", "Abort Rebase"),
+                ConflictOperation.StashPop => ($"Restoring your stashed changes onto {mineLabel}", "Finish Restoring", "Abort (keep stash)"),
+                _ => ($"Merging {theirsLabel} into {mineLabel}", "Finish Merge", "Abort Merge")
+            };
+            ReplaceConflictFiles(conflicts);
+            IsMergeConflictDialogOpen = true;
+        }
+
+        private void ReplaceConflictFiles(IReadOnlyList<MergeConflictFile> conflicts)
+        {
+            MergeConflictFiles.Clear();
+            foreach (var conflict in conflicts)
+            {
+                MergeConflictFiles.Add(conflict);
+                _conflictedPathsThisOperation.Add(conflict.Path);
+            }
+            SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
+            CanContinueMerge = false;
+            UpdateConflictProgress();
+        }
+
+        private string ConflictOperationNoun => _conflictOperation switch
+        {
+            ConflictOperation.Rebase => "rebase",
+            ConflictOperation.StashPop => "stash restore",
+            _ => "merge"
+        };
+
+        // Overridable so tests don't pop a real MessageBox (AIREADME #13).
+        public Func<string, string, bool> ConfirmAbortConflictAction { get; set; } =
+            (message, title) => MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
+        public Action<string, string> ReportErrorAction { get; set; } =
+            (message, title) => MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Error);
 
         [RelayCommand]
         public async Task ContinueMergeAsync()
         {
+            if (ConflictEditor.IsDirty) await SaveConflictFileCoreAsync();
             if (!CanContinueMerge || string.IsNullOrEmpty(RepositoryPath)) return;
 
-            var (success, output) = _conflictIsRebase
-                ? await _gitService.ContinueRebaseAsync(RepositoryPath)
-                : await _gitService.ContinueMergeAsync(RepositoryPath);
+            var operation = _conflictOperation;
+            var (success, output) = operation switch
+            {
+                ConflictOperation.Rebase => await _gitService.ContinueRebaseAsync(RepositoryPath),
+                ConflictOperation.StashPop => await FinishStashPopAsync(),
+                _ => await _gitService.ContinueMergeAsync(RepositoryPath)
+            };
 
             if (success)
             {
+                // Captured first, a stash restore below can open the dialog again and reset it
+                var resolvedPaths = _conflictedPathsThisOperation.ToList();
                 IsMergeConflictDialogOpen = false;
+                StatusMessage = operation switch
+                {
+                    ConflictOperation.Rebase => "Rebase completed.",
+                    ConflictOperation.StashPop => "Your stashed changes are back.",
+                    _ => "Merge completed."
+                };
+                if (operation == ConflictOperation.Merge) await RestorePendingAutoStashAsync();
+                await OfferOrigCleanupAsync(resolvedPaths);
                 await RefreshPillsAndWorkingChangesAsync();
-                StatusMessage = _conflictIsRebase ? "Rebase completed." : "Merge completed.";
                 return;
             }
 
@@ -1678,19 +1923,28 @@ namespace Girt.ViewModels
             var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
             if (conflicts.Count > 0)
             {
-                MergeConflictFiles.Clear();
-                foreach (var conflict in conflicts) MergeConflictFiles.Add(conflict);
-                SelectedConflictFile = MergeConflictFiles.FirstOrDefault();
-                CanContinueMerge = false;
-                StatusMessage = $"{(_conflictIsRebase ? "Rebase" : "Merge")} stopped - {conflicts.Count} file(s) have conflicts.";
+                // Next rebase step: the stages are a different commit now
+                ConflictEditor.ForgetAll();
+                ReplaceConflictFiles(conflicts);
+                StatusMessage = $"{ConflictOperationNoun} stopped - {conflicts.Count} file(s) have conflicts.";
             }
             else
             {
-                MessageBox.Show(
-                    $"Could not complete the {(_conflictIsRebase ? "rebase" : "merge")}:\n{output}",
-                    _conflictIsRebase ? "Continue Rebase" : "Continue Merge",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                ReportErrorAction($"Could not complete the {ConflictOperationNoun}:\n{output}", ContinueMergeButtonLabel);
             }
+        }
+
+        // Every file is staged by now. Drop the stash git kept because of the conflict, then
+        // unstage so the changes look like they did before they were stashed.
+        private async Task<(bool Success, string Output)> FinishStashPopAsync()
+        {
+            if (_conflictStashHash != null)
+            {
+                var (dropped, dropOutput) = await _gitService.DropStashByHashAsync(RepositoryPath, _conflictStashHash);
+                if (!dropped) return (false, dropOutput);
+                _conflictStashHash = null;
+            }
+            return await _gitService.UnstageAllAsync(RepositoryPath);
         }
 
         [RelayCommand]
@@ -1698,32 +1952,311 @@ namespace Girt.ViewModels
         {
             if (string.IsNullOrEmpty(RepositoryPath)) return;
 
-            var opLabel = _conflictIsRebase ? "rebase" : "merge";
-            var result = MessageBox.Show(
-                $"Abort the {opLabel} and discard all conflict resolution progress?\n\nYour branch will be restored to how it was before the {opLabel} started.",
-                _conflictIsRebase ? "Abort Rebase" : "Abort Merge",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
+            var operation = _conflictOperation;
+            var message = operation == ConflictOperation.StashPop
+                ? "Stop restoring your stashed changes?\n\nThe conflicted files go back to how they were, and your changes stay safe in the stash."
+                : $"Abort the {ConflictOperationNoun} and discard all conflict resolution progress?\n\nYour branch will be restored to how it was before the {ConflictOperationNoun} started.";
+            if (!ConfirmAbortConflictAction(message, AbortMergeButtonLabel)) return;
 
-            if (result != MessageBoxResult.Yes) return;
-
-            var (success, output) = _conflictIsRebase
-                ? await _gitService.AbortRebaseAsync(RepositoryPath)
-                : await _gitService.AbortMergeAsync(RepositoryPath);
+            var (success, output) = operation switch
+            {
+                ConflictOperation.Rebase => await _gitService.AbortRebaseAsync(RepositoryPath),
+                ConflictOperation.StashPop => await _gitService.AbortStashPopAsync(RepositoryPath),
+                _ => await _gitService.AbortMergeAsync(RepositoryPath)
+            };
 
             if (success)
             {
                 IsMergeConflictDialogOpen = false;
+                _conflictStashHash = null;
+                StatusMessage = operation switch
+                {
+                    ConflictOperation.Rebase => "Rebase aborted.",
+                    ConflictOperation.StashPop => "Stash restore stopped - your changes are still in the stash.",
+                    _ => "Merge aborted."
+                };
+                // The branch is back where it was, so the auto-stash belongs back on it too
+                if (operation == ConflictOperation.Merge) await RestorePendingAutoStashAsync();
                 await RefreshPillsAndWorkingChangesAsync();
-                StatusMessage = _conflictIsRebase ? "Rebase aborted." : "Merge aborted.";
             }
             else
             {
-                MessageBox.Show(
-                    $"Could not abort the {opLabel}:\n{output}",
-                    _conflictIsRebase ? "Abort Rebase" : "Abort Merge",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                ReportErrorAction($"Could not abort the {ConflictOperationNoun}:\n{output}", AbortMergeButtonLabel);
             }
+        }
+
+        // ================= .ORIG CLEANUP =================
+        // Merge tools (kdiff3, git mergetool with keepBackup) leave <file>.orig behind. Once a
+        // conflicted operation finishes, offer to get rid of the ones next to the files that
+        // conflicted - nothing else in the repo is touched.
+        [ObservableProperty]
+        private bool _isOrigCleanupDialogOpen;
+
+        [ObservableProperty]
+        private bool _origCleanupDontAskAgain;
+
+        public ObservableCollection<string> OrigCleanupFiles { get; } = new();
+
+        // Recycle Bin rather than a hard delete. Overridable for tests. Returns how many went.
+        public Func<IReadOnlyList<string>, (int Deleted, string? Error)> DeleteFilesAction { get; set; } = fullPaths =>
+        {
+            var deleted = 0;
+            try
+            {
+                foreach (var path in fullPaths)
+                {
+                    if (!File.Exists(path)) continue;
+                    Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path,
+                        Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                        Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                    deleted++;
+                }
+                return (deleted, null);
+            }
+            catch (Exception ex)
+            {
+                return (deleted, ex.Message);
+            }
+        };
+
+        private async Task OfferOrigCleanupAsync(IReadOnlyCollection<string> conflictedPaths)
+        {
+            if (conflictedPaths.Count == 0 || string.IsNullOrEmpty(RepositoryPath) ||
+                Settings.OrigFileCleanup == OrigFileCleanup.Keep) return;
+
+            var backups = await _gitService.GetUntrackedOrigBackupsAsync(RepositoryPath, conflictedPaths);
+            if (backups.Count == 0) return;
+
+            if (Settings.OrigFileCleanup == OrigFileCleanup.AlwaysDelete)
+            {
+                DeleteOrigBackups(backups);
+                return;
+            }
+
+            OrigCleanupFiles.Clear();
+            foreach (var backup in backups) OrigCleanupFiles.Add(backup);
+            OrigCleanupDontAskAgain = false;
+            IsOrigCleanupDialogOpen = true;
+        }
+
+        private void DeleteOrigBackups(IReadOnlyList<string> relativePaths)
+        {
+            var (deleted, error) = DeleteFilesAction(relativePaths.Select(p => Path.Combine(RepositoryPath, p)).ToList());
+            StatusMessage = error == null
+                ? $"Deleted {deleted} .orig file(s)."
+                : $"Deleted {deleted} of {relativePaths.Count} .orig file(s): {error}";
+        }
+
+        [RelayCommand]
+        public async Task ConfirmOrigCleanupDeleteAsync()
+        {
+            IsOrigCleanupDialogOpen = false;
+            if (OrigCleanupDontAskAgain) Settings.OrigFileCleanup = OrigFileCleanup.AlwaysDelete;
+            DeleteOrigBackups(OrigCleanupFiles.ToList());
+            OrigCleanupFiles.Clear();
+            await RefreshPillsAndWorkingChangesAsync();
+        }
+
+        [RelayCommand]
+        public void ConfirmOrigCleanupKeep()
+        {
+            IsOrigCleanupDialogOpen = false;
+            if (OrigCleanupDontAskAgain) Settings.OrigFileCleanup = OrigFileCleanup.Keep;
+            OrigCleanupFiles.Clear();
+        }
+
+        // ================= UPDATE FROM BRANCH =================
+        // "Bring the latest develop into my branch" in one go: stash anything uncommitted,
+        // fast-forward the local copy of the branch from its remote (no checkout), merge it in,
+        // then put the stash back. Popping after the merge means the merge always starts clean.
+        public const string AutoStashMessagePrefix = "girt: auto-stash before updating from ";
+
+        private static readonly string[] UpdateFromCandidateNames = { "develop", "main", "master", "trunk" };
+
+        // The branch the toolbar button updates from. Null hides the button: no candidate
+        // branch, detached HEAD, or already on one of the candidates.
+        [ObservableProperty]
+        private string? _updateFromBranchName;
+
+        // An auto-stash left behind (Girt closed mid-update, or the merge finished outside
+        // Girt). Offered back via a pill, never popped on its own.
+        [ObservableProperty]
+        private GitStashEntry? _orphanedAutoStash;
+
+        private string? _dismissedOrphanedAutoStashHash;
+
+        private void RefreshUpdateFromBranchName()
+        {
+            var current = CurrentBranch;
+            var localNames = BranchList.AllBranches.Where(b => !b.IsRemote).Select(b => b.Name).ToList();
+            if (string.IsNullOrEmpty(current) || current == "-" || current == "Detached HEAD" ||
+                UpdateFromCandidateNames.Contains(current, StringComparer.OrdinalIgnoreCase))
+            {
+                UpdateFromBranchName = null;
+                return;
+            }
+
+            UpdateFromBranchName = UpdateFromCandidateNames
+                .Select(candidate => localNames.FirstOrDefault(n => n.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                .FirstOrDefault(n => n != null);
+        }
+
+        [RelayCommand]
+        public Task UpdateFromTrunkAsync() =>
+            UpdateFromBranchName is { } branch ? MergeLatestIntoCurrentAsync(branch) : Task.CompletedTask;
+
+        [RelayCommand]
+        public async Task MergeLatestIntoCurrentAsync(object? parameter)
+        {
+            var branchName = parameter switch
+            {
+                GitBranch { IsRemote: false } b => b.Name,
+                string s => s,
+                _ => null
+            };
+            if (string.IsNullOrEmpty(branchName) || string.IsNullOrEmpty(RepositoryPath) || branchName == CurrentBranch) return;
+
+            if (_pendingAutoStashHash != null)
+            {
+                ReportErrorAction("An earlier update is still waiting on its merge to be finished or aborted.\n\nFinish that one first.", "Update Branch");
+                return;
+            }
+
+            var targetBranch = CurrentBranch;
+            IsLoading = true;
+            try
+            {
+                StatusMessage = "Saving your uncommitted changes...";
+                var (stashed, stashHash, stashOutput) = await _gitService.StashPushAllAsync(RepositoryPath, AutoStashMessagePrefix + branchName);
+                if (!stashed)
+                {
+                    ReportErrorAction($"Couldn't stash your uncommitted changes, so nothing was changed.\n\n{stashOutput}", "Update Branch");
+                    return;
+                }
+
+                StatusMessage = $"Fetching latest {branchName}...";
+                var (ffResult, ffOutput) = await _gitService.FastForwardBranchFromUpstreamAsync(RepositoryPath, branchName);
+                if (ffResult is FastForwardResult.Diverged or FastForwardResult.Failed)
+                {
+                    await RestoreAutoStashAsync(stashHash);
+                    var reason = ffResult == FastForwardResult.Diverged
+                        ? $"Your local {branchName} has commits that aren't on its remote, so it can't be updated automatically. Nothing was merged."
+                        : $"Couldn't fetch {branchName}, so nothing was merged.";
+                    ReportErrorAction($"{reason}\n\n{ffOutput}", "Update Branch");
+                    await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: true);
+                    return;
+                }
+
+                StatusMessage = $"Merging {branchName} into {targetBranch}...";
+                var (merged, mergeOutput) = await _gitService.MergeAsync(RepositoryPath, branchName);
+                if (!merged)
+                {
+                    var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
+                    if (conflicts.Count > 0)
+                    {
+                        // The stash waits until the merge is finished or aborted
+                        _pendingAutoStashHash = stashHash;
+                        OpenConflictDialog(ConflictOperation.Merge, conflicts, targetBranch, branchName);
+                        await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: true);
+                        StatusMessage = $"Merge stopped - {conflicts.Count} file(s) have conflicts.";
+                        return;
+                    }
+
+                    await RestoreAutoStashAsync(stashHash);
+                    ReportErrorAction($"Merging {branchName} failed:\n{mergeOutput}", "Update Branch");
+                    await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: true);
+                    return;
+                }
+
+                var restored = await RestoreAutoStashAsync(stashHash);
+                await DoRefreshRepositoryAsync(allowSkipUnchangedCommits: true);
+
+                var noRemote = ffResult == FastForwardResult.NoUpstream ? $" ({branchName} has no remote, used the local copy)" : "";
+                if (restored)
+                {
+                    StatusMessage = mergeOutput.Contains("Already up to date")
+                        ? $"Already up to date with {branchName}{noRemote}."
+                        : $"Merged latest {branchName} into {targetBranch}{noRemote}.";
+                }
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        private async Task RestorePendingAutoStashAsync()
+        {
+            var hash = _pendingAutoStashHash;
+            _pendingAutoStashHash = null;
+            await RestoreAutoStashAsync(hash);
+        }
+
+        // Returns true once the changes are back (or there was nothing to restore). A conflicted
+        // pop opens the conflict dialog, and git keeps the stash until that's resolved.
+        private async Task<bool> RestoreAutoStashAsync(string? stashHash)
+        {
+            if (stashHash == null || string.IsNullOrEmpty(RepositoryPath)) return true;
+
+            StatusMessage = "Restoring your uncommitted changes...";
+            var (popped, output) = await _gitService.StashPopByHashAsync(RepositoryPath, stashHash);
+            if (popped) return true;
+
+            var conflicts = await _gitService.GetConflictedFilesAsync(RepositoryPath);
+            if (conflicts.Count > 0)
+            {
+                _conflictStashHash = stashHash;
+                OpenConflictDialog(ConflictOperation.StashPop, conflicts, CurrentBranch, "your stashed changes");
+                StatusMessage = $"Restoring your changes hit {conflicts.Count} conflict(s).";
+                return false;
+            }
+
+            ReportErrorAction(
+                $"Your uncommitted changes are still safe in the stash, but couldn't be put back automatically:\n\n{output}",
+                "Restore Changes");
+            return false;
+        }
+
+        // Cheap (one `stash list`), and only checks merge state when there's a candidate.
+        private async Task RefreshOrphanedAutoStashAsync()
+        {
+            if (string.IsNullOrEmpty(RepositoryPath) || _pendingAutoStashHash != null || _conflictStashHash != null || IsMergeConflictDialogOpen)
+            {
+                OrphanedAutoStash = null;
+                return;
+            }
+
+            var stashes = await _gitService.GetStashesAsync(RepositoryPath);
+            var candidate = stashes.FirstOrDefault(s =>
+                s.Message.Contains(AutoStashMessagePrefix, StringComparison.Ordinal) &&
+                s.Hash != _dismissedOrphanedAutoStashHash);
+
+            if (candidate != null && await _gitService.IsMergeOrRebaseInProgressAsync(RepositoryPath))
+            {
+                candidate = null;
+            }
+            OrphanedAutoStash = candidate;
+        }
+
+        [RelayCommand]
+        public async Task RestoreOrphanedAutoStashAsync()
+        {
+            var stash = OrphanedAutoStash;
+            if (stash == null) return;
+
+            OrphanedAutoStash = null;
+            if (await RestoreAutoStashAsync(stash.Hash))
+            {
+                StatusMessage = "Your stashed changes are back.";
+            }
+            await RefreshPillsAndWorkingChangesAsync();
+        }
+
+        [RelayCommand]
+        public void DismissOrphanedAutoStash()
+        {
+            _dismissedOrphanedAutoStashHash = OrphanedAutoStash?.Hash;
+            OrphanedAutoStash = null;
         }
 
         [RelayCommand]

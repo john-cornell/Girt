@@ -285,31 +285,50 @@ namespace Girt.Services
             return (success, (output + "\n" + error).Trim());
         }
 
-        public async Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, string filePath)
+        // One git call for the whole batch, not one per file - running restore per file let the
+        // UI's diff refresh (git diff, which grabs index.lock to refresh stat info) land between
+        // them, so every restore after the first died on "index.lock: File exists".
+        // Untracked files have nothing to restore, they just get deleted.
+        public async Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, IReadOnlyList<string> trackedPaths, IReadOnlyList<string> untrackedPaths)
         {
-            var cleanPath = filePath.Replace("\"", "\\\"");
-            // Check if untracked
-            var fullPath = Path.Combine(repoPath, filePath);
-            if (File.Exists(fullPath))
+            var errors = new List<string>();
+
+            foreach (var path in untrackedPaths)
             {
-                var (isUntrackedSuccess, untrackedOutput, _) = await RunGitCommandAsync(repoPath, $"ls-files --error-unmatch \"{cleanPath}\"").ConfigureAwait(false);
-                if (!isUntrackedSuccess)
+                try
                 {
-                    // Untracked file -> delete it
-                    try
+                    File.Delete(Path.Combine(repoPath, path));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{path}: {ex.Message}");
+                }
+            }
+
+            if (trackedPaths.Count > 0)
+            {
+                // Paths go in a file rather than on the command line, a big selection can blow
+                // past the Windows command line length limit
+                var pathspecFile = Path.Combine(Path.GetTempPath(), $"girt_discard_{Guid.NewGuid():N}.txt");
+                try
+                {
+                    await File.WriteAllTextAsync(pathspecFile, string.Join('\0', trackedPaths), new UTF8Encoding(false)).ConfigureAwait(false);
+                    var (success, output, error) = await RunGitCommandAsync(repoPath, $"--literal-pathspecs restore --pathspec-from-file=\"{pathspecFile}\" --pathspec-file-nul").ConfigureAwait(false);
+                    if (!success)
                     {
-                        File.Delete(fullPath);
-                        return (true, "Deleted untracked file");
+                        errors.Add((output + "\n" + error).Trim());
                     }
-                    catch (Exception ex)
+                }
+                finally
+                {
+                    if (File.Exists(pathspecFile))
                     {
-                        return (false, ex.Message);
+                        File.Delete(pathspecFile);
                     }
                 }
             }
 
-            var (success, output, error) = await RunGitCommandAsync(repoPath, $"restore -- \"{cleanPath}\"").ConfigureAwait(false);
-            return (success, (output + "\n" + error).Trim());
+            return errors.Count == 0 ? (true, "") : (false, string.Join("\n", errors));
         }
 
         public async Task<(bool Success, string Output)> CommitAsync(string repoPath, string message)
@@ -639,28 +658,39 @@ namespace Girt.Services
         }
 
         // A conflicted path has up to three index stages: 1=common ancestor, 2=ours, 3=theirs.
-        // Rather than show raw <<<<<<< conflict markers, extract each stage to a temp file and
-        // diff base->ours / base->theirs separately, so each side reads as an ordinary,
-        // familiar unified diff in the existing DiffViewerControl. A missing stage (e.g. the
-        // file was added on only one side) is treated as an empty base, which naturally shows
-        // up as "all additions" instead of failing.
-        public async Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath)
+        // Runs git's own 3-way merge on them so the editor gets git's auto-merged lines plus
+        // the conflict regions, in a marker format that doesn't depend on the user's
+        // merge.conflictStyle. --marker-size makes the markers long enough that a "=======" line
+        // in the file itself (a markdown underline, say) can't be mistaken for one. A missing
+        // stage (added on one side only) is treated as empty.
+        public async Task<ConflictMergeResult> GetConflictMergeAsync(string repoPath, string filePath, bool mineIsTheirsStage)
         {
             var cleanPath = filePath.Replace("\"", "\\\"");
+            var baseBytes = await ReadIndexStageAsync(repoPath, 1, cleanPath).ConfigureAwait(false);
+            var oursBytes = await ReadIndexStageAsync(repoPath, 2, cleanPath).ConfigureAwait(false);
+            var theirsBytes = await ReadIndexStageAsync(repoPath, 3, cleanPath).ConfigureAwait(false);
+            var mineBytes = mineIsTheirsStage ? theirsBytes : oursBytes;
+            var otherBytes = mineIsTheirsStage ? oursBytes : theirsBytes;
+
+            if (LooksBinary(baseBytes) || LooksBinary(mineBytes) || LooksBinary(otherBytes))
+            {
+                return new ConflictMergeResult { IsBinary = true };
+            }
+
             var tempDir = Path.Combine(Path.GetTempPath(), $"girt_conflict_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
             try
             {
-                await WriteStageBlobOrEmptyAsync(repoPath, 1, cleanPath, Path.Combine(tempDir, "base")).ConfigureAwait(false);
-                await WriteStageBlobOrEmptyAsync(repoPath, 2, cleanPath, Path.Combine(tempDir, "ours")).ConfigureAwait(false);
-                await WriteStageBlobOrEmptyAsync(repoPath, 3, cleanPath, Path.Combine(tempDir, "theirs")).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(tempDir, "mine"), mineBytes).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(tempDir, "base"), baseBytes).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(tempDir, "theirs"), otherBytes).ConfigureAwait(false);
 
-                // Run from tempDir so git's a/... b/... diff headers read as short, clean
-                // "base"/"ours"/"theirs" labels instead of leaking the full temp file path.
-                var oursDiff = (await RunGitCommandAsync(tempDir, $"diff --no-index --unified={FullDiffContextLines} -- base ours").ConfigureAwait(false)).Output;
-                var theirsDiff = (await RunGitCommandAsync(tempDir, $"diff --no-index --unified={FullDiffContextLines} -- base theirs").ConfigureAwait(false)).Output;
-
-                return (oursDiff, theirsDiff);
+                // Exit code is the number of conflicts, so non-zero is normal. 255 is an error.
+                var (exitCode, merged, error) = await RunGitForBytesAsync(tempDir,
+                    $"merge-file -p --diff3 --marker-size={ConflictDocument.MarkerSize} -L mine -L base -L theirs -- mine base theirs").ConfigureAwait(false);
+                return exitCode is >= 0 and < 255
+                    ? new ConflictMergeResult { Merged = merged }
+                    : new ConflictMergeResult { Error = string.IsNullOrWhiteSpace(error) ? $"git merge-file failed ({exitCode})" : error.Trim() };
             }
             finally
             {
@@ -668,10 +698,45 @@ namespace Girt.Services
             }
         }
 
-        private static async Task WriteStageBlobOrEmptyAsync(string repoPath, int stage, string cleanPath, string destPath)
+        private static async Task<byte[]> ReadIndexStageAsync(string repoPath, int stage, string cleanPath)
         {
-            var (success, output, _) = await RunGitCommandAsync(repoPath, $"show \":{stage}:{cleanPath}\"").ConfigureAwait(false);
-            await File.WriteAllTextAsync(destPath, success ? output : "", Encoding.UTF8).ConfigureAwait(false);
+            var (exitCode, bytes, _) = await RunGitForBytesAsync(repoPath, $"cat-file blob \":{stage}:{cleanPath}\"").ConfigureAwait(false);
+            return exitCode == 0 ? bytes : Array.Empty<byte>();
+        }
+
+        // Same rule git uses: a NUL byte in the first 8000 bytes means binary.
+        private static bool LooksBinary(byte[] bytes) =>
+            Array.IndexOf(bytes, (byte)0, 0, Math.Min(bytes.Length, 8000)) >= 0;
+
+        // Resolves the whole file with one side's version and stages it.
+        public async Task<(bool Success, string Output)> CheckoutConflictSideAsync(string repoPath, string filePath, bool oursStage)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var side = oursStage ? "--ours" : "--theirs";
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"checkout {side} -- \"{cleanPath}\"").ConfigureAwait(false);
+            if (!success) return (false, (output + "\n" + error).Trim());
+            return await StageFileAsync(repoPath, filePath).ConfigureAwait(false);
+        }
+
+        // Resolves a delete/modify conflict by deleting the file.
+        public async Task<(bool Success, string Output)> RemoveConflictedFileAsync(string repoPath, string filePath)
+        {
+            var cleanPath = filePath.Replace("\"", "\\\"");
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"rm -q -- \"{cleanPath}\"").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        public async Task<(bool Success, string Output)> WriteWorkingTreeFileBytesAsync(string repoPath, string filePath, byte[] content)
+        {
+            try
+            {
+                await File.WriteAllBytesAsync(Path.Combine(repoPath, filePath), content).ConfigureAwait(false);
+                return (true, "File updated");
+            }
+            catch (Exception ex)
+            {
+                return (false, ex.Message);
+            }
         }
 
         // Delegates to whatever the user has configured as `merge.tool` (kdiff3, meld,
@@ -759,6 +824,133 @@ namespace Girt.Services
         {
             var (success, output, error) = await RunGitCommandAsync(repoPath, "push --force-with-lease").ConfigureAwait(false);
             return (success, (output + "\n" + error).Trim());
+        }
+
+        // -u so untracked files go along too, otherwise a merge that adds the same path would
+        // refuse to run. StashHash is null when there was nothing to save.
+        public async Task<(bool Success, string? StashHash, string Output)> StashPushAllAsync(string repoPath, string message)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash push -u -m \"{message.Replace("\"", "\\\"")}\"").ConfigureAwait(false);
+            var combined = (output + "\n" + error).Trim();
+            if (!success) return (false, null, combined);
+            if (combined.Contains("No local changes to save")) return (true, null, combined);
+
+            var (hashOk, hash, hashError) = await RunGitCommandAsync(repoPath, "rev-parse stash@{0}").ConfigureAwait(false);
+            return hashOk ? (true, hash.Trim(), combined) : (false, null, hashError.Trim());
+        }
+
+        public async Task<IReadOnlyList<GitStashEntry>> GetStashesAsync(string repoPath)
+        {
+            var (success, output, _) = await RunGitCommandAsync(repoPath, "stash list --format=%gd%x1f%H%x1f%gs").ConfigureAwait(false);
+            var stashes = new List<GitStashEntry>();
+            if (!success) return stashes;
+
+            foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = line.Split(FieldSeparator);
+                if (parts.Length < 3) continue;
+                stashes.Add(new GitStashEntry { Ref = parts[0], Hash = parts[1], Message = parts[2] });
+            }
+            return stashes;
+        }
+
+        // Pops by hash, not stash@{0}, so a stash made by anything else in the meantime can't
+        // get popped by mistake. --index puts staged changes back as staged. git refuses that
+        // when the index can't take it, and then a plain pop still gets the changes back.
+        public async Task<(bool Success, string Output)> StashPopByHashAsync(string repoPath, string stashHash)
+        {
+            var stashRef = await FindStashRefAsync(repoPath, stashHash).ConfigureAwait(false);
+            if (stashRef == null) return (false, $"Stash {stashHash[..Math.Min(8, stashHash.Length)]} no longer exists.");
+
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash pop --index {stashRef}").ConfigureAwait(false);
+            var combined = (output + "\n" + error).Trim();
+            if (success || !combined.Contains("without --index")) return (success, combined);
+
+            (success, output, error) = await RunGitCommandAsync(repoPath, $"stash pop {stashRef}").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        public async Task<(bool Success, string Output)> DropStashByHashAsync(string repoPath, string stashHash)
+        {
+            var stashRef = await FindStashRefAsync(repoPath, stashHash).ConfigureAwait(false);
+            if (stashRef == null) return (true, "Stash already gone.");
+
+            var (success, output, error) = await RunGitCommandAsync(repoPath, $"stash drop {stashRef}").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        private async Task<string?> FindStashRefAsync(string repoPath, string stashHash)
+        {
+            var stashes = await GetStashesAsync(repoPath).ConfigureAwait(false);
+            return stashes.FirstOrDefault(s => s.Hash.Equals(stashHash, StringComparison.OrdinalIgnoreCase))?.Ref;
+        }
+
+        // A conflicted stash pop leaves the stash in the list, so putting the files back to HEAD
+        // loses nothing. --merge keeps any working changes that weren't part of the pop.
+        public async Task<(bool Success, string Output)> AbortStashPopAsync(string repoPath)
+        {
+            var (success, output, error) = await RunGitCommandAsync(repoPath, "reset --merge").ConfigureAwait(false);
+            return (success, (output + "\n" + error).Trim());
+        }
+
+        // Updates a local branch from its upstream without checking it out. fetch only ever
+        // fast-forwards a <src>:<dst> refspec, so a branch with its own unpushed commits gets
+        // rejected rather than rewritten.
+        public async Task<(FastForwardResult Result, string Output)> FastForwardBranchFromUpstreamAsync(string repoPath, string branchName)
+        {
+            var cleanBranch = branchName.Replace("\"", "\\\"");
+            var (_, remoteOut, _) = await RunGitCommandAsync(repoPath, $"config --get \"branch.{cleanBranch}.remote\"").ConfigureAwait(false);
+            var (_, mergeOut, _) = await RunGitCommandAsync(repoPath, $"config --get \"branch.{cleanBranch}.merge\"").ConfigureAwait(false);
+            var remote = remoteOut.Trim();
+            var mergeRef = mergeOut.Trim();
+
+            // "." means it tracks another local branch, so there's nothing to fetch
+            if (remote.Length == 0 || mergeRef.Length == 0 || remote == ".")
+            {
+                return (FastForwardResult.NoUpstream, $"'{branchName}' has no remote upstream.");
+            }
+
+            var (success, output, error) = await RunGitCommandAsync(repoPath,
+                $"fetch \"{remote.Replace("\"", "\\\"")}\" \"{mergeRef}:refs/heads/{cleanBranch}\"").ConfigureAwait(false);
+            var combined = (output + "\n" + error).Trim();
+            if (success) return (FastForwardResult.Updated, combined);
+
+            return combined.Contains("non-fast-forward")
+                ? (FastForwardResult.Diverged, combined)
+                : (FastForwardResult.Failed, combined);
+        }
+
+        public async Task<bool> IsMergeOrRebaseInProgressAsync(string repoPath)
+        {
+            var (merging, _, _) = await RunGitCommandAsync(repoPath, "rev-parse -q --verify MERGE_HEAD").ConfigureAwait(false);
+            if (merging) return true;
+
+            var (ok, output, _) = await RunGitCommandAsync(repoPath, "rev-parse --git-path rebase-merge --git-path rebase-apply").ConfigureAwait(false);
+            if (!ok) return false;
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => Path.IsPathRooted(p) ? p : Path.Combine(repoPath, p))
+                .Any(Directory.Exists);
+        }
+
+        // Only `<path>.orig` next to a file that was conflicted, and only if git doesn't track it -
+        // a tracked .orig is somebody's real file.
+        public async Task<IReadOnlyList<string>> GetUntrackedOrigBackupsAsync(string repoPath, IEnumerable<string> conflictedPaths)
+        {
+            var candidates = conflictedPaths
+                .Select(p => p + ".orig")
+                .Where(p => File.Exists(Path.Combine(repoPath, p)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (candidates.Count == 0) return candidates;
+
+            var quoted = string.Join(" ", candidates.Select(c => $"\"{c.Replace("\"", "\\\"")}\""));
+            var (success, output, _) = await RunGitCommandAsync(repoPath, $"ls-files -z -- {quoted}").ConfigureAwait(false);
+            if (!success) return Array.Empty<string>();
+
+            var tracked = output
+                .Split(new[] { '\0', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return candidates.Where(c => !tracked.Contains(c.Replace('\\', '/'))).ToList();
         }
 
         public async Task<(bool Success, string Output)> ResetHeadAsync(string repoPath, string targetRef, GitResetMode mode)
@@ -1150,6 +1342,50 @@ namespace Girt.Services
                 _inFlightStatus[key] = entry;
                 _ = task.ContinueWith(_ => _inFlightStatus.TryRemove(new KeyValuePair<string, (DateTime, Task<(bool, string, string)>)>(key, entry)), TaskScheduler.Default);
                 return task;
+            }
+        }
+
+        // Like RunGitProcessAsync, but hands back stdout as raw bytes and the real exit code -
+        // file content has to round-trip exactly (line endings, encoding), which the line-based
+        // text reader can't promise.
+        private static async Task<(int ExitCode, byte[] Output, string Error)> RunGitForBytesAsync(string workingDirectory, string arguments)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            Interlocked.Increment(ref _inFlightCommandCount);
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = $"-C \"{workingDirectory.Replace("\"", "\\\"")}\" {arguments}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                using var process = new Process { StartInfo = psi };
+                process.Start();
+                using var output = new MemoryStream();
+                var errorTask = process.StandardError.ReadToEndAsync();
+                await process.StandardOutput.BaseStream.CopyToAsync(output).ConfigureAwait(false);
+                var error = await errorTask.ConfigureAwait(false);
+                await process.WaitForExitAsync().ConfigureAwait(false);
+
+                _lastCommandCompletedUtc = DateTime.UtcNow;
+                LogService.Timing($"git {arguments}", stopwatch.ElapsedMilliseconds);
+                return (process.ExitCode, output.ToArray(), error);
+            }
+            catch (Exception ex)
+            {
+                _lastCommandCompletedUtc = DateTime.UtcNow;
+                LogService.Error($"git {arguments} threw", ex);
+                return (-1, Array.Empty<byte>(), ex.Message);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _inFlightCommandCount);
             }
         }
 

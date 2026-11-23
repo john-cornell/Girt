@@ -33,7 +33,7 @@ namespace Girt.Services
         Task<(bool Success, string Output)> UnstageFileAsync(string repoPath, string filePath);
         Task<(bool Success, string Output)> StageAllAsync(string repoPath);
         Task<(bool Success, string Output)> UnstageAllAsync(string repoPath);
-        Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, string filePath);
+        Task<(bool Success, string Output)> DiscardChangesAsync(string repoPath, IReadOnlyList<string> trackedPaths, IReadOnlyList<string> untrackedPaths);
         Task<(bool Success, string Output)> CommitAsync(string repoPath, string message);
         Task<string> GetWorkingTreeFileDiffAsync(string repoPath, string filePath, bool isStaged, bool ignoreWhitespace = false);
         Task<(bool Success, string Output)> WriteWorkingTreeFileAsync(string repoPath, string filePath, string content);
@@ -61,7 +61,10 @@ namespace Girt.Services
         Task<IReadOnlyList<GitCommit>> GetCommitsBetweenAsync(string repoPath, string fromRef, string toRef, int maxCount = 200);
         Task<IReadOnlyList<GitFileDiff>> GetDiffStatBetweenAsync(string repoPath, string fromRef, string toRef);
         Task<IReadOnlyList<MergeConflictFile>> GetConflictedFilesAsync(string repoPath);
-        Task<(string OursDiff, string TheirsDiff)> GetConflictDiffsAsync(string repoPath, string filePath);
+        Task<ConflictMergeResult> GetConflictMergeAsync(string repoPath, string filePath, bool mineIsTheirsStage);
+        Task<(bool Success, string Output)> CheckoutConflictSideAsync(string repoPath, string filePath, bool oursStage);
+        Task<(bool Success, string Output)> RemoveConflictedFileAsync(string repoPath, string filePath);
+        Task<(bool Success, string Output)> WriteWorkingTreeFileBytesAsync(string repoPath, string filePath, byte[] content);
         Task<(bool Success, string Output)> LaunchMergeToolAsync(string repoPath, string filePath);
         Task<(bool Success, string Output)> ConfigureKDiff3AsMergeToolAsync(string repoPath);
         Task<(bool Success, string Output)> AbortMergeAsync(string repoPath);
@@ -69,5 +72,15 @@ namespace Girt.Services
         Task<(bool Success, string Output)> AbortRebaseAsync(string repoPath);
         Task<(bool Success, string Output)> ContinueRebaseAsync(string repoPath);
         Task<(bool Success, string Output)> ForcePushWithLeaseAsync(string repoPath);
+
+        // Update-from-branch flow
+        Task<(bool Success, string? StashHash, string Output)> StashPushAllAsync(string repoPath, string message);
+        Task<IReadOnlyList<GitStashEntry>> GetStashesAsync(string repoPath);
+        Task<(bool Success, string Output)> StashPopByHashAsync(string repoPath, string stashHash);
+        Task<(bool Success, string Output)> DropStashByHashAsync(string repoPath, string stashHash);
+        Task<(bool Success, string Output)> AbortStashPopAsync(string repoPath);
+        Task<(FastForwardResult Result, string Output)> FastForwardBranchFromUpstreamAsync(string repoPath, string branchName);
+        Task<bool> IsMergeOrRebaseInProgressAsync(string repoPath);
+        Task<IReadOnlyList<string>> GetUntrackedOrigBackupsAsync(string repoPath, IEnumerable<string> conflictedPaths);
     }
 }

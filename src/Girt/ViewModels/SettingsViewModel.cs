@@ -15,6 +15,7 @@ namespace Girt.ViewModels
         private readonly Action<bool> _saveMinimizeOnClose;
         private readonly Action<bool> _saveFolderExpandOnSingleClick;
         private readonly Action<bool> _saveEnableTimingLogs;
+        private readonly Action<OrigFileCleanup> _saveOrigFileCleanup;
 
         // MinimizeToTray/MinimizeOnClose are the single source of truth for both this Settings
         // page and the tray icon's own context menu (MainWindow.xaml.cs mirrors these instead of
@@ -32,6 +33,29 @@ namespace Girt.ViewModels
         private bool _enableTimingLogs;
 
         public string LogFilePath => LogService.LogFilePath;
+
+        // One owner for both the Settings radio buttons and the cleanup prompt's
+        // "Don't ask again" box (AIREADME #11).
+        [ObservableProperty]
+        private OrigFileCleanup _origFileCleanup;
+
+        public bool OrigCleanupAsk
+        {
+            get => OrigFileCleanup == OrigFileCleanup.Ask;
+            set { if (value) OrigFileCleanup = OrigFileCleanup.Ask; }
+        }
+
+        public bool OrigCleanupAlwaysDelete
+        {
+            get => OrigFileCleanup == OrigFileCleanup.AlwaysDelete;
+            set { if (value) OrigFileCleanup = OrigFileCleanup.AlwaysDelete; }
+        }
+
+        public bool OrigCleanupKeep
+        {
+            get => OrigFileCleanup == OrigFileCleanup.Keep;
+            set { if (value) OrigFileCleanup = OrigFileCleanup.Keep; }
+        }
 
         [ObservableProperty]
         private string _globalUserName = string.Empty;
@@ -82,7 +106,9 @@ namespace Girt.ViewModels
             bool initialFolderExpandOnSingleClick,
             Action<bool> saveFolderExpandOnSingleClick,
             bool initialEnableTimingLogs,
-            Action<bool> saveEnableTimingLogs)
+            Action<bool> saveEnableTimingLogs,
+            OrigFileCleanup initialOrigFileCleanup = OrigFileCleanup.Ask,
+            Action<OrigFileCleanup>? saveOrigFileCleanup = null)
         {
             _gitService = gitService;
             _getRepoPath = getRepoPath;
@@ -90,17 +116,27 @@ namespace Girt.ViewModels
             _saveMinimizeOnClose = saveMinimizeOnClose;
             _saveFolderExpandOnSingleClick = saveFolderExpandOnSingleClick;
             _saveEnableTimingLogs = saveEnableTimingLogs;
+            _saveOrigFileCleanup = saveOrigFileCleanup ?? (_ => { });
 
             _minimizeToTray = initialMinimizeToTray;
             _minimizeOnClose = initialMinimizeOnClose;
             _folderExpandOnSingleClick = initialFolderExpandOnSingleClick;
             _enableTimingLogs = initialEnableTimingLogs;
+            _origFileCleanup = initialOrigFileCleanup;
             LogService.EnableTimingLogs = initialEnableTimingLogs;
         }
 
         partial void OnMinimizeToTrayChanged(bool value) => _saveMinimizeToTray(value);
         partial void OnMinimizeOnCloseChanged(bool value) => _saveMinimizeOnClose(value);
         partial void OnFolderExpandOnSingleClickChanged(bool value) => _saveFolderExpandOnSingleClick(value);
+
+        partial void OnOrigFileCleanupChanged(OrigFileCleanup value)
+        {
+            _saveOrigFileCleanup(value);
+            OnPropertyChanged(nameof(OrigCleanupAsk));
+            OnPropertyChanged(nameof(OrigCleanupAlwaysDelete));
+            OnPropertyChanged(nameof(OrigCleanupKeep));
+        }
 
         partial void OnEnableTimingLogsChanged(bool value)
         {

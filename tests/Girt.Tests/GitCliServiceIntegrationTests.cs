@@ -58,6 +58,34 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task DiscardChanges_ManyFilesAtOnce_RestoresTrackedAndDeletesUntracked()
+        {
+            var tracked = Enumerable.Range(1, 12).Select(i => $"dir {i}/file[{i}].txt").ToList();
+            foreach (var path in tracked)
+            {
+                Directory.CreateDirectory(Path.Combine(_testRepoPath, Path.GetDirectoryName(path)!));
+                File.WriteAllText(Path.Combine(_testRepoPath, path), "original");
+            }
+            RunGit("add -A");
+            RunGit("commit -m \"Initial\"");
+
+            foreach (var path in tracked)
+            {
+                File.WriteAllText(Path.Combine(_testRepoPath, path), "changed");
+            }
+            File.WriteAllText(Path.Combine(_testRepoPath, "untracked.txt"), "new");
+
+            var (success, output) = await _gitService.DiscardChangesAsync(_testRepoPath, tracked, new[] { "untracked.txt" });
+
+            Assert.True(success, output);
+            foreach (var path in tracked)
+            {
+                Assert.Equal("original", File.ReadAllText(Path.Combine(_testRepoPath, path)));
+            }
+            Assert.False(File.Exists(Path.Combine(_testRepoPath, "untracked.txt")));
+        }
+
+        [Fact]
         public async Task ConcurrentStatusCalls_ShareOneScan_AndBothGetCorrectResults()
         {
             File.WriteAllText(Path.Combine(_testRepoPath, "tracked.txt"), "one");
@@ -297,7 +325,7 @@ namespace Girt.Tests
         }
 
         [Fact]
-        public async Task Merge_WithRealConflict_IsDetectedAndDiffsAreExtractedPerSide_ThenAbortRestoresCleanState()
+        public async Task Merge_WithRealConflict_IsDetectedAndParsedPerSide_ThenAbortRestoresCleanState()
         {
             File.WriteAllText(Path.Combine(_testRepoPath, "shared.txt"), "line one\nline two\nline three\n");
             RunGit("add shared.txt");
@@ -321,11 +349,16 @@ namespace Girt.Tests
             Assert.Equal("shared.txt", conflicts[0].Path);
             Assert.Equal(MergeConflictType.BothModified, conflicts[0].ConflictType);
 
-            var (oursDiff, theirsDiff) = await _gitService.GetConflictDiffsAsync(_testRepoPath, "shared.txt");
-            Assert.Contains("+OURS CHANGE", oursDiff);
-            Assert.Contains("+THEIRS CHANGE", theirsDiff);
-            Assert.DoesNotContain("THEIRS CHANGE", oursDiff);
-            Assert.DoesNotContain("OURS CHANGE", theirsDiff);
+            var merge = await _gitService.GetConflictMergeAsync(_testRepoPath, "shared.txt", mineIsTheirsStage: false);
+            var document = ConflictDocument.Parse(merge.Merged!);
+            var conflict = Assert.Single(document.Blocks, b => b.IsConflict);
+            Assert.Equal("OURS CHANGE", conflict.MineText);
+            Assert.Equal("THEIRS CHANGE", conflict.TheirsText);
+            Assert.Equal("line two", conflict.BaseText);
+
+            // Rebase puts the user's work in stage 3, so mine and theirs swap
+            var swapped = ConflictDocument.Parse((await _gitService.GetConflictMergeAsync(_testRepoPath, "shared.txt", mineIsTheirsStage: true)).Merged!);
+            Assert.Equal("THEIRS CHANGE", Assert.Single(swapped.Blocks, b => b.IsConflict).MineText);
 
             var (abortSuccess, _) = await _gitService.AbortMergeAsync(_testRepoPath);
             Assert.True(abortSuccess);

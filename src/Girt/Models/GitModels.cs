@@ -318,6 +318,32 @@ namespace Girt.Models
         }
     }
 
+    /// <summary>One `git stash list` entry. Hash is the stable identity - stash@{n} indexes
+    /// shift every time anything else is stashed or popped.</summary>
+    public class GitStashEntry
+    {
+        public string Ref { get; set; } = string.Empty;
+        public string Hash { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public enum FastForwardResult
+    {
+        Updated,
+        NoUpstream,
+        Diverged,
+        Failed
+    }
+
+    /// <summary>Which git operation the conflict editor is resolving - each one needs
+    /// different finish/abort commands, and rebase swaps which index stage is "mine".</summary>
+    public enum ConflictOperation
+    {
+        Merge,
+        Rebase,
+        StashPop
+    }
+
     public enum MergeConflictType
     {
         BothModified,
@@ -340,6 +366,10 @@ namespace Girt.Models
 
         [ObservableProperty]
         private bool _isResolved;
+
+        // Known once the file has been opened in the editor
+        [ObservableProperty]
+        private int? _unresolvedCount;
 
         public string ConflictLabel => ConflictType switch
         {

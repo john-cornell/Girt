@@ -62,6 +62,7 @@ namespace Girt
             // made by clicking) - without this, selecting a branch far down a long history
             // updates SelectedCommit but the graph visibly doesn't move.
             _viewModel.CommitHistory.PropertyChanged += OnCommitHistoryPropertyChanged;
+            _viewModel.ConflictEditor.PropertyChanged += OnConflictEditorPropertyChanged;
 
             InitializeTrayIcon();
             StateChanged += OnWindowStateChanged;
@@ -331,6 +332,24 @@ namespace Girt
             if (ResolveBranchFromMenuItem(sender) is { } branch)
             {
                 _viewModel.MergeNoFfIntoCurrentBranchCommand.Execute(branch);
+            }
+        }
+
+        // F8 moves the highlight - bring that conflict into view
+        private void OnConflictEditorPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(ConflictEditorViewModel.CurrentBlock) && _viewModel.ConflictEditor.CurrentBlock is { } block)
+            {
+                Dispatcher.BeginInvoke(() => ConflictBlocksList.ScrollIntoView(block), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+
+        // Click + code-behind rather than Command, per AIREADME #12
+        private void OnMergeLatestClicked(object sender, RoutedEventArgs e)
+        {
+            if (ResolveBranchFromMenuItem(sender) is { } branch)
+            {
+                _viewModel.MergeLatestIntoCurrentCommand.Execute(branch);
             }
         }
 
