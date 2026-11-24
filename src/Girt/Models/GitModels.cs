@@ -96,6 +96,10 @@ namespace Girt.Models
 
         public bool HasChangesToCommit => UncommittedCount > 0;
         public bool HasCommitsToPush => AheadCount > 0;
+
+        // No upstream means the branch only exists locally. AheadCount is never computed then, so
+        // "0 to push" would hide that the whole branch still needs pushing.
+        public bool IsUnpublished => !HasUpstream;
         public bool HasCommitsToPull => BehindCount > 0;
     }
 

@@ -200,11 +200,23 @@
                                 Padding="8,4">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="⇡ " Foreground="#3B82F6" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
-                                <TextBlock Text="{Binding RepoStatus.AheadCount, StringFormat='{}{0} to push'}"
-                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                <!-- No upstream: the branch only exists locally, so say so instead of "0 to push" -->
+                                <TextBlock Foreground="{DynamicResource TextPrimaryBrush}"
                                            FontWeight="SemiBold"
                                            FontSize="12"
-                                           VerticalAlignment="Center" />
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="{Binding RepoStatus.AheadCount, StringFormat='{}{0} to push'}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding RepoStatus.IsUnpublished}" Value="True">
+                                                    <Setter Property="Text" Value="Not published" />
+                                                    <Setter Property="ToolTip" Value="This branch isn't on the remote yet. Click to publish it." />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                             </StackPanel>
                         </Border>
                     </Button>

@@ -1187,6 +1187,13 @@ namespace Girt.ViewModels
         [RelayCommand]
         public async Task PushPillClickedAsync()
         {
+            // Nothing to review against yet, publishing is the only thing to do
+            if (RepoStatus is { IsUnpublished: true })
+            {
+                await PushAsync();
+                return;
+            }
+
             if (PushPillOpensReview)
             {
                 await UnpushedChanges.OpenAsync();

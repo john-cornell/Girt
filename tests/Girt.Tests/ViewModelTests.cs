@@ -2183,6 +2183,25 @@ namespace Girt.Tests
         }
 
         [Fact]
+        public async Task MainViewModel_PushPillClicked_UnpublishedBranch_PushesEvenInReviewMode()
+        {
+            // A branch with no upstream has nothing to review against, the pill click should just publish it
+            var fakeGit = new FakeGitService();
+            var mainVm = new MainViewModel(fakeGit, new RecentRepositoriesService(), CreateIsolatedThemeService())
+            {
+                RepositoryPath = @"C:\FakeRepo",
+                RepoStatus = new GitRepoStatus { HasUpstream = false, AheadCount = 0 },
+                PushPillOpensReview = true
+            };
+
+            Assert.True(mainVm.RepoStatus.IsUnpublished);
+
+            await mainVm.PushPillClickedCommand.ExecuteAsync(null);
+
+            Assert.True(fakeGit.PushCalled);
+        }
+
+        [Fact]
         public async Task MainViewModel_PushAsync_NothingAheadButNoUncommittedChanges_StillPushesNormally()
         {
             // "Everything up-to-date" is a legitimate, harmless push attempt here - only the
